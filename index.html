@@ -16,8 +16,8 @@
                            calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 4px calc(100% - 4px), 0 calc(100% - 4px)); }
   body { margin: 0; height: 100dvh; padding: 12px; box-sizing: border-box; background: var(--c1); color: var(--c7);
          font: 16px/1.25 Silkscreen, ui-monospace, Menlo, monospace; text-align: center; -webkit-font-smoothing: none; }
-  #bay { width: 100%; height: 100%; display: grid; place-items: center; container-type: size; }
-  #console { --w: min(100cqw - 32px, (100cqh - 112px) / 1.3); width: calc(var(--w) + 32px); box-sizing: border-box; padding: 0 12px 12px;
+  #bay { width: 100%; height: 100%; display: grid; grid-template-rows: 1fr auto; gap: 8px; place-items: center; container-type: size; }
+  #console { --w: min(100cqw - 32px, (100cqh - 128px) / 1.3); width: calc(var(--w) + 32px); box-sizing: border-box; padding: 0 12px 12px;
              display: flex; flex-direction: column; gap: 12px; background: var(--c5); border: 4px solid var(--c0); }
   header { flex: none; display: flex; align-items: center; gap: 12px; height: 32px; margin: 0 -12px; padding: 0 12px; background: var(--c8); }
   h1 { margin: 0; font-size: 24px; line-height: 1; color: var(--c7); text-shadow: 0 4px 0 var(--c2); text-transform: uppercase; }
@@ -75,6 +75,10 @@
   :is(#pick, #save) { --c: var(--c9); --d: var(--c4); }
   :is(#cancel, #eject) { --c: var(--c8); --d: var(--c2); }
 
+  /* The source, low key under the console */
+  footer a { font-size: 8px; line-height: 8px; color: var(--c13); text-decoration: none; text-transform: uppercase; }
+  footer a:is(:hover, :focus-visible) { color: var(--c7); }
+
   [hidden], [data-state=empty] :is(.scanning, .loaded), [data-state=scanning] :is(.empty, .loaded), [data-state=loaded] :is(.empty, .scanning, .unloaded) { display: none !important; }
 </style>
 
@@ -101,7 +105,7 @@
     <button id="eject" class="px loaded">Eject</button>
   </div></div>
   </div>
-</main></div>
+</main><footer><a href="https://github.com/greener-dot-ca/p8per">github.com/greener-dot-ca/p8per</a></footer></div>
 <input type="file" id="file" accept="image/png" hidden>
 
 <script type="module">

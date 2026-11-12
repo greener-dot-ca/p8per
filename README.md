@@ -42,3 +42,8 @@ the guide, one quarter after another; turn the sheet over if it says to. 1080p v
 ## Test
 
     node test.mjs path/to/some.p8.png
+
+## License
+
+MIT: do what you like with it, keeping the copyright notice (LICENSE). PICO-8 is by Lexaloffle;
+carts belong to their authors.
