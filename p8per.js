@@ -2,7 +2,7 @@
 //
 // Code format:
 // - a letter sheet, both sides, folded in quarters: on each quarter but the cover (the front's top
-//   left) one TILE of 0.4 mm black and white modules, with 0.25 in of white round it, read and
+//   left) one TILE of 0.4 mm black and white modules, with at least 6 mm of white round it, read and
 //   corrected on its own. A cart takes the tiles it needs, in order: the front's three, then the
 //   back's four (QUARTERS). All the modules are on one C x R grid, the front's quarters then the back's.
 //   Black and white because a phone photo keeps brightness sharp and smears colour: a test sheet
@@ -10,11 +10,12 @@
 //   cart PICO-8 can make (45 KB packed) fits one sheet: 0.6 mm read better from 20 cm, but a sheet
 //   held only 24 KB.
 // - alignment targets (TARGETS) on a ~76-module lattice per tile, its outer ones at the tile's edges
-//   (so curl is measured right out to them), so a phone can read the sheet a part at a time: a 9x9 bullseye (black border, white ring, black ring, 3x3 white centre: 1:1:3:1:1
-//   at one module a unit) over a 9 x 3 strip of its ID (lattice column and row, 4 bits each), a
-//   CRC-10 of the ID, the format's 8 bits (how many tiles the cart takes, 6 bits, and its
-//   error-correction level, 2 bits, LEVELS), and a white bit. So any one target says where it is,
-//   and how many tiles the cart takes.
+//   (so curl is measured right out to them), so a phone can read the sheet a part at a time: an
+//   11x11 square, a 9x9 bullseye (black border, white ring, black ring, 3x3 white centre: 1:1:3:1:1
+//   at one module a unit) in a ring of 40 bits (RIM) of its ID (lattice column and row, 4 bits
+//   each), a CRC-24 of the ID, and the format's 8 bits (how many tiles the cart takes, 6 bits, and
+//   its error-correction level, 2 bits, LEVELS). So any one target says where it is, which way up
+//   it is (the ring read from another side fails the CRC), and how many tiles the cart takes.
 // - data: the rest of each tile, its modules row-major, 1 bit each (white = 1), XORed with MASK; the
 //   bytes are interleaved Reed-Solomon blocks (up to 255 bytes, parity the level's share), whose
 //   data is the tile's share of the payload and its crc32 (so a tile read with its parity nearly all
@@ -24,14 +25,14 @@
 
 // The sheet, in printer pixels of 0.1 mm (254 dpi): letter, both sides, folded in quarters. Each
 // quarter but the cover (the front's top left) can hold one tile of code, QW x QH modules of
-// 0.4 mm (M px) with 0.25 in (6.35 mm) of white all round: to the paper's edge (past any printer's
+// 0.4 mm (M px) with at least 6 mm of white all round: to the paper's edge (past any printer's
 // margin) and either side of the folds, so each quarter reads on its own and the folded cart's
 // edges stay clean. A cart takes as many tiles as it needs, in order: the front's three (top right,
 // bottom left, bottom right), then the back's four (bottom left, bottom right, top right, top left).
 // Modules are numbered on one grid of C x R: the front's two columns of quarters, then the back's,
 // QP x QR modules apart (half a page), so a module's place on the grid is its place on its page.
 export const PW = 2159, PH = 2794, M = 4;
-export const QP = Math.round(PW / 2 / M), QR = Math.round(PH / 2 / M), QW = Math.floor((PW / 2 - 127) / M), QH = Math.floor((PH / 2 - 127) / M);
+export const QP = Math.round(PW / 2 / M), QR = Math.round(PH / 2 / M), QW = Math.floor((PW / 2 - 120) / M), QH = Math.floor((PH / 2 - 120) / M);
 export const OX = Math.round((PW / 2 - QW * M) / 2), OY = Math.round((PH / 2 - QH * M) / 2); // a page's first module, in printer pixels
 export const C = 4 * QP, R = 2 * QR;
 export const PALETTE = [[0, 0, 0], [255, 255, 255]]; // the code's black and white
@@ -45,24 +46,27 @@ const LEVELS = [0.1, 0.15, 0.2, 0.3]; // error correction: the share of each blo
 const QUARTERS = [[1, 0], [0, 1], [1, 1], [2, 1], [3, 1], [3, 0], [2, 0]];
 export const TILES = QUARTERS.map(([i, j]) => [i * QP, j * QR, i * QP + QW, j * QR + QH]), NT = TILES.length;
 export const side = x => x >= 2 * QP ? 1 : 0; // 0 the front, 1 the back
-// k target centres from a + lo to b - 1 - hi: a target reaches 4 modules left, right and up of its
-// centre and 7 down. 4 a tile across and 5 down, so an ID's column fits 4 bits.
-const lattice = (a, b, lo, hi, k) => Array.from({ length: k }, (_, i) => a + lo + Math.floor(i * (b - 1 - hi - a - lo) / (k - 1)));
-const LX = [0, 1, 2, 3].flatMap(i => lattice(i * QP, i * QP + QW, 4, 4, 4)), LY = [0, 1].flatMap(j => lattice(j * QR, j * QR + QH, 4, 7, 5)); // alignment target centres, each quarter its own
+// k target centres from 5 modules in from a to 5 in from b (a target's half): the outer ones flush
+// with the tile's edges. 4 a tile across and 5 down, so an ID's column fits 4 bits.
+const lattice = (a, b, k) => Array.from({ length: k }, (_, i) => a + 5 + Math.floor(i * (b - a - 11) / (k - 1)));
+const LX = [0, 1, 2, 3].flatMap(i => lattice(i * QP, i * QP + QW, 4)), LY = [0, 1].flatMap(j => lattice(j * QR, j * QR + QH, 5)); // alignment target centres, each quarter its own
 const TARGETS = []; // [column, row, x, y] of each target printed, x y its centre module
-const crc10 = id => { let r = id << 10; for (let b = 17; b >= 10; b--) if (r >> b & 1) r ^= 0x633 << b - 10; return (r ^ 0x2e6) & 0x3ff; }; // xored, so an all-black strip isn't a valid ID (and with a value no earlier layout used)
+// A target's ring, clockwise from its top-left corner: [dx, dy] from its centre, 10 a side
+const RIM = Array.from({ length: 40 }, (_, t) => { const s = t / 10 | 0, k = t % 10 - 5; return [[k, -5], [5, k], [-k, 5], [-5, -k]][s]; });
+// The ring's first 32 bits: the ID and a CRC-24 of it, xored so an all-black or all-white ring isn't valid,
+// and so a ring read from another side (whatever the format) is at least 5 bits from any valid one
+const tag = id => { let r = id << 24 >>> 0; for (let b = 31; b >= 24; b--) if (r >>> b & 1) r = (r ^ 0x1864cfb << b - 24) >>> 0; return (id << 24 | (r ^ 0x16b4e9) & 0xffffff) >>> 0; };
 
 const LAYOUT = new Uint8Array(C * R).fill(PAPER);
 {
   const set = (x, y, v) => { if (x >= 0 && y >= 0 && x < C && y < R) LAYOUT[y * C + x] = v; };
   const ring = (dx, dy, n) => Math.min(dx, dy, n - 1 - dx, n - 1 - dy);
   for (const [x0, y0, x1, y1] of TILES) for (let y = y0; y < y1; y++) LAYOUT.fill(DATA, y * C + x0, y * C + x1);
-  const clear = (cx, cy) => { for (let dy = -4; dy <= 7; dy++) for (let dx = -4; dx <= 4; dx++) if (LAYOUT[(cy + dy) * C + cx + dx] !== DATA) return false; return true; };
   LY.forEach((cy, j) => LX.forEach((cx, i) => {
-    if (!clear(cx, cy)) return;
+    for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) if (LAYOUT[(cy + dy) * C + cx + dx] !== DATA) return;
     for (let dy = 0; dy < 9; dy++) for (let dx = 0; dx < 9; dx++) set(cx - 4 + dx, cy - 4 + dy, ring(dx, dy, 9) % 2 ? WHITE : ring(dx, dy, 9) < 3 ? BLACK : WHITE);
-    const id = i << 4 | j, word = id << 10 | crc10(id); // 18 bits, then the format's 8, then a white bit
-    for (let t = 0; t < 27; t++) set(cx - 4 + t % 9, cy + 5 + (t / 9 | 0), t < 18 ? (word >> 17 - t & 1 ? WHITE : BLACK) : t < 26 ? FMT + t - 18 : WHITE);
+    const word = tag(i << 4 | j); // 32 bits, then the format's 8
+    RIM.forEach(([dx, dy], t) => set(cx + dx, cy + dy, t < 32 ? (word >>> 31 - t & 1 ? WHITE : BLACK) : FMT + t - 32));
     TARGETS.push([i, j, cx, cy]);
   }));
 }
@@ -300,12 +304,12 @@ export async function encode(rgba, name) {
 function format(sym, seen) {
   const ones = new Array(8).fill(0), all = new Array(8).fill(0);
   for (const [i, j, cx, cy] of TARGETS) {
-    const at = t => (cy + 5 + (t / 9 | 0)) * C + cx - 4 + t % 9;
-    if (seen && !Array.from({ length: 26 }, (_, t) => seen[at(t)]).every(Boolean)) continue;
+    const at = t => (cy + RIM[t][1]) * C + cx + RIM[t][0];
+    if (seen && !RIM.every((_, t) => seen[at(t)])) continue;
     let word = 0;
-    for (let t = 0; t < 18; t++) word = word << 1 | sym[at(t)] & 1;
-    if (word !== ((i << 4 | j) << 10 | crc10(i << 4 | j))) continue;
-    for (let d = 0; d < 8; d++) { ones[d] += sym[at(18 + d)] & 1; all[d]++; }
+    for (let t = 0; t < 32; t++) word = (word << 1 | sym[at(t)] & 1) >>> 0;
+    if (word !== tag(i << 4 | j)) continue;
+    for (let d = 0; d < 8; d++) { ones[d] += sym[at(32 + d)] & 1; all[d]++; }
   }
   if (all.some(a => !a)) return null;
   const f = ones.reduce((f, o, d) => f << 1 | (o * 2 > all[d]), 0), n = f >> 2;
@@ -483,11 +487,11 @@ export function sweep() {
       const white = (at(0, 0) + at(3, 0) + at(-3, 0) + at(0, 3) + at(0, -3)) / 5, black = (at(2, 0) + at(-2, 0) + at(0, 2) + at(0, -2)) / 4, mid = (white + black) / 2;
       if (white - black < 20 || RING.some(([i, j, v]) => at(i, j) > mid !== !!v)) continue;
       let word = 0;
-      for (let t = 0; t < 18; t++) word = word << 1 | (at(t % 9 - 4, 5 + (t / 9 | 0)) > mid);
-      const id = word >> 10;
-      if ((word & 0x3ff) === crc10(id) && at(4, 7) > mid && place.has(id)) {
+      for (let t = 0; t < 32; t++) word = (word << 1 | (at(...RIM[t]) > mid)) >>> 0;
+      const id = word >>> 24;
+      if (word === tag(id) && place.has(id)) {
         let f = 0;
-        for (let t = 18; t < 26; t++) f = f << 1 | (at(t % 9 - 4, 5 + (t / 9 | 0)) > mid);
+        for (let t = 32; t < 40; t++) f = f << 1 | (at(...RIM[t]) > mid);
         if (f >> 2 >= 1 && f >> 2 <= NT) told.set(f, (told.get(f) || 0) + 1);
         pairs.push([place.get(id), [c.x, c.y], id]); break found;
       }
