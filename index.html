@@ -5,160 +5,334 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap">
 <style>
-  /* An 80s console in chunky pixels: no curves, no soft shadows, 4px steps everywhere */
-  body { margin: 0; height: 100dvh; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; box-sizing: border-box;
-         background: #c2c3c7; color: #1d2b53; font: 16px Silkscreen, ui-monospace, Menlo, monospace; text-align: center; -webkit-font-smoothing: none; }
-  header { width: 100%; max-width: 34rem; display: flex; align-items: center; gap: 10px; padding-bottom: 8px;
-           border-bottom: 8px solid; border-image: linear-gradient(90deg, #ff004d 20%, #ffa300 0 40%, #ffec27 0 60%, #00e436 0 80%, #29adff 0) 1; }
-  h1 { margin: 0; font-size: 24px; color: #ff004d; text-shadow: 4px 4px 0 #7e2553; }
-  #vent { flex: 1; height: 16px; background: repeating-linear-gradient(90deg, #5f574f 0 4px, transparent 0 12px); }
-  #led { width: 12px; height: 12px; background: #7e2553; border: 4px solid #5f574f; }
-  [data-state=scanning] #led { background: #ffec27; }
-  [data-state=loaded] #led { background: #ff004d; border-color: #ff77a8; }
-  #bay { flex: 1; min-height: 0; width: 100%; display: grid; place-items: center; container-type: size; }
-  /* The slot is cut to the cart's outline: chamfered corners and the notch at bottom right */
-  #rim, #slot { clip-path: polygon(1.875% 0, 98.125% 0, 100% 1.463%, 100% 95.12%, 93.75% 100%, 1.875% 100%, 0 98.537%, 0 1.463%); }
-  #rim { height: min(100cqh, 100cqw * 205 / 160); aspect-ratio: 160 / 205; position: relative; background: #5f574f; }
-  #rim:has(.over) { background: #ffec27; }
-  #slot { position: absolute; inset: 8px; overflow: hidden; background: #000; display: grid; place-items: center; }
-  #slot canvas, #slot video { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; object-fit: cover; }
-  nav { height: 44px; display: flex; gap: 12px; justify-content: center; }
-  button, nav a { font: inherit; white-space: nowrap; text-transform: uppercase; box-sizing: border-box; height: 40px; padding: 8px 14px; cursor: pointer; text-decoration: none;
-                  background: #5f574f; color: #fff1e8; border: 0; border-bottom: 4px solid #000; box-shadow: inset 0 4px 0 #83769c, 4px 4px 0 #83769c; }
-  :is(button, nav a):active { border-bottom-width: 0; transform: translate(4px, 4px); box-shadow: none; }
-  #eject, #cancel { background: #ff004d; box-shadow: inset 0 4px 0 #ff77a8, 4px 4px 0 #83769c; }
-  #status { width: 100%; max-width: 34rem; box-sizing: border-box; height: calc(2.5em + 16px); padding: 4px 8px; line-height: 1.25; overflow: hidden;
-            background: #1d2b53; color: #00e436; font-size: 14px; border: 4px solid #000; }
-  [hidden], [data-state=empty] :is(.scanning, .loaded), [data-state=scanning] :is(.empty, .loaded), [data-state=loaded] :is(.empty, .scanning) { display: none !important; }
+  /* PICO-8's look: its 16 colours only, its pixel font at sizes that stay crisp (multiples of 8 px),
+     no curves, gradients or blur, just stepped 4 px corners (.px) and hard edges. A window like
+     PICO-8's editor: a red title bar, then a 2 x 2 grid: the paper across the top (front and back
+     side by side), and below, the screen (the camera while scanning) on the left and the actions on
+     the right, each page-shaped. --w is the grid's width: as big as fits. */
+  :root { --c0: #000; --c1: #1d2b53; --c2: #7e2553; --c3: #008751; --c4: #ab5236; --c5: #5f574f; --c6: #c2c3c7; --c7: #fff1e8;
+          --c8: #ff004d; --c9: #ffa300; --c10: #ffec27; --c11: #00e436; --c12: #29adff; --c13: #83769c; --c14: #ff77a8; --c15: #ffcca8; }
+  .px { clip-path: polygon(0 4px, 4px 4px, 4px 0, calc(100% - 4px) 0, calc(100% - 4px) 4px, 100% 4px, 100% calc(100% - 4px),
+                           calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 4px calc(100% - 4px), 0 calc(100% - 4px)); }
+  body { margin: 0; height: 100dvh; padding: 12px; box-sizing: border-box; background: var(--c1); color: var(--c7);
+         font: 16px/1.25 Silkscreen, ui-monospace, Menlo, monospace; text-align: center; -webkit-font-smoothing: none; }
+  #bay { width: 100%; height: 100%; display: grid; place-items: center; container-type: size; }
+  #console { --w: min(100cqw - 32px, (100cqh - 112px) / 1.3); width: calc(var(--w) + 32px); box-sizing: border-box; padding: 0 12px 12px;
+             display: flex; flex-direction: column; gap: 12px; background: var(--c5); border: 4px solid var(--c0); }
+  header { flex: none; display: flex; align-items: center; gap: 12px; height: 32px; margin: 0 -12px; padding: 0 12px; background: var(--c8); }
+  h1 { margin: 0; font-size: 24px; line-height: 1; color: var(--c7); text-shadow: 0 4px 0 var(--c2); text-transform: uppercase; }
+  #vent { flex: 1; align-self: center; height: 8px; margin-left: auto; max-width: 64px; /* the PICO-8 logo's colours, a block each */
+          background: linear-gradient(90deg, var(--c8) 0 12.5%, var(--c9) 0 25%, var(--c10) 0 37.5%, var(--c11) 0 50%, var(--c12) 0 62.5%, var(--c13) 0 75%, var(--c14) 0 87.5%, var(--c15) 0); }
+  #led { width: 8px; height: 8px; background: var(--c2); outline: 4px solid var(--c0); }
+  [data-state=scanning] #led { background: var(--c10); }
+  [data-state=loaded] #led { background: var(--c11); }
+  [data-state=scanning] #led.tick { background: var(--c7); }
+
+  #grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  /* The slot, a bay that shows the sheet as printed: front and back side by side */
+  #rim { grid-column: span 2; aspect-ratio: 1464 / 932; position: relative; background: var(--c0); }
+  #rim:has(.over) { background: var(--c10); }
+  /* While scanning, the pages fill in as they're read; #look draws over them what the camera sees. */
+  #slot { position: absolute; inset: 8px; overflow: hidden; background: var(--c0); }
+  #slot canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+
+  /* The screen: the cart, once there is one, or while scanning just the camera's view, cropped to
+     fill it, with a guide the shape of a tile as big as fits (a tile filling it is about 4 px a
+     module, close enough to read). No words: what's going on shows. */
+  #screen { aspect-ratio: 8.5 / 11; position: relative; overflow: hidden; background: var(--c0); }
+  #finder { position: absolute; inset: 0; container-type: size; }
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* The guide says how the reading's going: grey, no targets; orange, targets but too far to read; green,
+     reading; and solid green with a check when the tile in view is done (or not needed), so move on */
+  #guide { position: absolute; inset: 0; margin: auto; box-sizing: border-box; border: 4px dashed var(--c6); /* a tile's shape (--tile wide to 1 high), 90% of the tighter side */
+           width: min(90cqw, 90cqh * var(--tile)); height: min(90cqh, 90cqw / var(--tile)); }
+  #guide[data-lock=near] { border-color: var(--c9); }
+  #guide[data-lock=read] { border-color: var(--c11); }
+  #guide[data-lock=done] { border: 8px solid var(--c11); image-rendering: pixelated;
+    background: #00e436b0 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 6' shape-rendering='crispEdges' fill='%23fff1e8'%3E%3Cpath d='M7 0h2v1H7zM6 1h2v1H6zM5 2h2v1H5zM0 3h2v1H0zM4 3h2v1H4zM1 4h4v1H1zM2 5h2v1H2z'/%3E%3C/svg%3E") center / 50% no-repeat; }
+  #marks { position: absolute; inset: 0; width: 100%; height: 100%; } /* a dot on each target the frame recognised */
+  #shown { position: absolute; inset: 0; display: grid; place-items: center; }
+  [data-state=scanning] #shown { display: none; }
+  #art { display: block; image-rendering: pixelated; } /* the cart, sized by art() */
+
+  /* The buttons, in one ACTIONS panel: whichever the moment needs. Pointing at one outlines what it
+     acts on: the code (scan, the .pdf) or the cart (load, save, eject). */
+  .zone { position: absolute; pointer-events: none; outline: 4px dashed transparent; outline-offset: -4px; }
+  #page { inset: 0; }
+  #console:has(:is(#cam, #cancel, #sheet):is(:hover, :focus-visible)) #page, #console:has(:is(#pick, #save, #eject):is(:hover, :focus-visible)) #cover { outline-color: var(--c10); }
+  #actions { box-sizing: border-box; overflow: hidden; padding: 8px; background: var(--c6); display: flex; flex-direction: column; gap: 8px; }
+  #actions > b { font-weight: 400; line-height: 1; color: var(--c5); text-transform: uppercase; }
+  .act { display: grid; gap: 8px; } /* a column of buttons */
+  .act > * { justify-content: center; }
+
+  /* Flat buttons coloured by job, standing on a darker 4 px edge that they press down onto */
+  button, .act a { --c: var(--c5); --d: var(--c0); font: inherit; min-width: 0; overflow-wrap: anywhere; text-transform: uppercase; text-decoration: none;
+                   box-sizing: border-box; min-height: 36px; padding: 4px 8px; display: inline-flex; align-items: center; cursor: pointer; border: 0; border-bottom: 4px solid var(--d);
+                   color: var(--c7); text-shadow: 0 2px 0 var(--d); background: var(--c); }
+  :is(button, .act a):active { transform: translateY(4px); border-bottom-width: 0; margin-bottom: 4px; } /* down onto its edge; the rest stay put */
+  #cam { --c: var(--c11); --d: var(--c3); }
+  #sheet { --c: var(--c12); --d: var(--c1); }
+  :is(#pick, #save) { --c: var(--c9); --d: var(--c4); }
+  :is(#cancel, #eject) { --c: var(--c8); --d: var(--c2); }
+
+  [hidden], [data-state=empty] :is(.scanning, .loaded), [data-state=scanning] :is(.empty, .loaded), [data-state=loaded] :is(.empty, .scanning, .unloaded) { display: none !important; }
 </style>
 
 <body data-state="empty">
-<header><h1>p8per</h1><div id="vent"></div><div id="led"></div></header>
-<div id="bay">
-  <div id="rim"><div id="slot">
-    <canvas id="pins" width="320" height="410"></canvas>
-    <video id="video" class="scanning" playsinline muted></video>
+<div id="bay"><main id="console" class="px">
+  <header><h1>p8per</h1><div id="vent"></div><div id="led"></div></header>
+  <div id="grid">
+  <div id="rim" class="px"><div id="slot">
+    <canvas id="pins" width="1464" height="932"></canvas>
+    <canvas id="look" class="scanning"></canvas>
+    <div id="page" class="zone"></div>
+    <div id="cover" class="zone"></div>
   </div></div>
-</div>
-<nav>
-  <button id="cam" class="empty">Scan</button>
-  <button id="pick" class="empty">Choose file</button>
-  <button id="cancel" class="scanning">Cancel</button>
-  <a id="save" class="loaded">.p8.png</a>
-  <a id="sheet" class="loaded">.p8.pdf</a>
-  <button id="eject" class="loaded">Eject</button>
-</nav>
-<div id="status">Insert cart: scan a printed one, or choose a .p8.png or a photo.</div>
-<input type="file" id="file" accept="image/*" hidden>
+  <div id="screen" class="px">
+    <div id="finder" class="scanning"><video id="video" playsinline muted></video><canvas id="marks"></canvas><i id="guide"></i></div>
+    <div id="shown"><a id="cart" class="loaded" target="_blank"><img id="art" alt="the cart"></a></div>
+  </div>
+  <div class="px" id="actions"><b>Actions</b><div class="act">
+    <button id="cam" class="px empty">Scan .p8.pdf</button>
+    <button id="pick" class="px empty">Upload .p8.png</button>
+    <button id="cancel" class="px scanning">Cancel</button>
+    <a id="sheet" class="px loaded">Download .p8.pdf</a>
+    <a id="save" class="px loaded">Download .p8.png</a>
+    <button id="eject" class="px loaded">Eject</button>
+  </div></div>
+  </div>
+</main></div>
+<input type="file" id="file" accept="image/png" hidden>
 
 <script type="module">
-  import { C, R, LX, LY, PALETTE, encode, scan, pngDecode, pngEncode, pdf } from './p8per.js';
+  import { PW, PH, M, QP, QR, QW, QH, OX, OY, R, TILES, PALETTE, side, encode, pngDecode, pngEncode, pdf } from './p8per.js';
   const $ = id => document.getElementById(id);
-  const say = text => $('status').textContent = text;
-  const HINT = $('status').textContent;
   let stream;
 
   function state(s) {
     document.body.dataset.state = s;
-    if (s !== 'scanning') stream?.getTracks().forEach(t => t.stop());
-    if (s !== 'loaded') $('slot').querySelector('.cart')?.remove();
+    if (s !== 'scanning') { stream?.getTracks().forEach(t => t.stop()); $('video').srcObject = null; }
+    if (s !== 'loaded') $('slot').querySelector('.sheet')?.remove();
+    if (s !== 'scanning' && blank) { $('pins').getContext('2d').putImageData(blank.view, 0, 0); $('look').getContext('2d').clearRect(0, 0, SW, VH); }
   }
 
-  // The slot's contacts: one pin for each alignment target on the back of a cart and a socket for
-  // each corner mark, mirrored because the cart goes in face down. 2 px per cart pixel.
-  {
-    const ctx = $('pins').getContext('2d'), at = (mx, my) => [320 - (100 + mx * 8) / 8, (68 + my * 8) / 8]; // module -> slot px
-    ctx.fillStyle = '#ffa300';
-    for (const cy of LY) for (const cx of LX) { const [x, y] = at(cx + .5, cy + .5); ctx.fillRect(x - 3, y - 3, 6, 6); ctx.clearRect(x - 1, y - 1, 2, 2); }
-    for (const [r, b, col] of [[0, 0, 0], [1, 0, 6], [1, 1, 3], [0, 1, 4]]) {
-      const [x, y] = at(r ? C - 7 : 7, b ? R - 7 : 7);
-      ctx.fillStyle = `rgb(${PALETTE[col]})`;
-      ctx.fillRect(x - 7, y - 7, 14, 14); ctx.clearRect(x - 5, y - 5, 10, 10); ctx.fillRect(x - 3, y - 3, 6, 6);
+  // The printed sheet: letter at 254 dpi (PW x PH px), M px per module; each side's code from (OX, OY),
+  // a tile a quarter.
+
+  // Where the cart sits on the cover quarter, the front's top left: 7 mm in from the sides, centred
+  // top to bottom. The cart is 0.780 wide per unit high and a letter quarter 0.773, so it fills the
+  // cover alone.
+  const COVER = { k: (PW / 2 - 140) / 160, x: 70 };
+  COVER.y = Math.round((PH / 2 - 205 * COVER.k) / 2);
+
+  // A side of the sheet in memory at a third of the printed page's pixels; at(on, x, y): where
+  // module (x, y) of the grid lands on side on (0 front, 1 back).
+  const VW = Math.ceil(PW / 3), VH = Math.ceil(PH / 3), K = M / 3, at = (on, x, y) => [(OX + (x - on * 2 * QP) * M) / 3, (OY + y * M) / 3];
+  function view(page) {
+    const cv = Object.assign(document.createElement('canvas'), { width: VW, height: VH }), ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(page, 0, 0, PW / 3, PH / 3);
+    return cv;
+  }
+  // The slot shows the sheet as printed, the front and the back side by side, GAP apart; side s starts at X(s)
+  const GAP = 24, SW = 2 * VW + GAP, X = s => s * (VW + GAP);
+  function pages(sides, into) {
+    const cv = into || Object.assign(document.createElement('canvas'), { width: SW, height: VH, className: 'sheet' }), ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, SW, VH);
+    sides.forEach((v, s) => ctx.drawImage(v, X(s), 0));
+    return cv;
+  }
+  Object.assign($('cover').style, { left: COVER.x / 3 / SW * 100 + '%', top: COVER.y / 3 / VH * 100 + '%', width: 160 * COVER.k / 3 / SW * 100 + '%', height: 205 * COVER.k / 3 / VH * 100 + '%' });
+
+  // An empty cart: a cart's frame, label blacked out, no title, no data (empty.png)
+  const blankCart = async () => (await pngDecode(new Uint8Array(await (await fetch('empty.png')).arrayBuffer()))).rgba;
+
+  // The empty slot: a blank sheet (the code all white) with an empty cart on its cover
+  let blank; // { rgba, view: the slot's pixels, back: a blank back }, an empty cart's sheet
+  (async () => {
+    const rgba = await blankCart(), back = view(sheetCanvas(null, null, 1)), cv = Object.assign(pages([view(sheetCanvas(rgba, null, 0)), back]), { id: 'pins', className: '' });
+    $('pins').replaceWith(cv);
+    Object.assign($('look'), { width: SW, height: VH });
+    blank = { rgba, back, view: cv.getContext('2d').getImageData(0, 0, SW, VH) };
+  })();
+
+  // While sweeping, the pages start blank, and fill in: modules not read yet white, the rest black
+  // or white as read (orange where only faintly, or frames disagree: worth another pass), with a
+  // yellow outline where the camera is looking now. From the first target read, the tiles the cart
+  // takes show: red to read, green once decoded.
+  // Only the part of the sheet the frame touched is repainted (the worker sends just that patch),
+  // onto that side's copy. Patches worth another pass get an orange wash too: 16 x 16 module
+  // squares where over 3% of what's been read is shaky (one orange module is easy to miss on a phone).
+  const TS = 16, TW = Math.ceil(4 * QP / TS), INK = [[0, 0, 0, 255], [255, 255, 255, 255], [255, 163, 0, 255]];
+  let tiles = null, on = 0, paper, rough;
+  function fill(info, patch) {
+    const lc = $('look').getContext('2d');
+    paper ||= [view(sheetCanvas(blank.rgba, null, 0)), view(sheetCanvas(null, null, 1))]; // each side, as read so far
+    rough ||= new Uint8Array(TW * Math.ceil(R / TS));
+    if (info.side !== undefined) on = info.side;
+    tiles = info.tiles || tiles;
+    if (patch && patch.w && patch.h) { // not read yet: see-through, so the blank sheet shows
+      const { x0, y0, w, h, cells } = patch, px = new ImageData(w, h), small = new OffscreenCanvas(w, h), ctx = paper[side(x0)].getContext('2d');
+      cells.forEach((c, i) => c < 3 && px.data.set(INK[c], i * 4));
+      small.getContext('2d').putImageData(px, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(small, ...at(side(x0), x0, y0), w * K, h * K);
+      for (const [t, r] of patch.tiles) rough[t] = r;
+    }
+    pages(paper, $('pins'));
+    lc.clearRect(0, 0, SW, VH);
+    // The cart's tiles: red to read, green decoded
+    if (tiles) TILES.forEach(([x0, y0, x1, y1], t) => {
+      const s = side(x0), [x, y] = at(s, x0, y0), w = (x1 - x0) * K, h = (y1 - y0) * K, v = tiles[t];
+      if (v === undefined) return;
+      lc.fillStyle = v === 1 ? '#00e43640' : '#ff004d40'; lc.fillRect(X(s) + x, y, w, h);
+      lc.lineWidth = 4; lc.strokeStyle = v === 1 ? '#00e436' : '#ff004d'; lc.strokeRect(X(s) + x - 4, y - 4, w + 8, h + 8);
+    });
+    // On each side, in its own pixels: the shaky squares, and on the side in view where the camera is
+    for (const s of [0, 1]) {
+      lc.save();
+      lc.beginPath(); lc.rect(X(s), 0, VW, VH); lc.clip();
+      lc.translate(X(s), 0);
+      lc.fillStyle = '#ffa30059';
+      rough.forEach((r, t) => r && side(t % TW * TS) === s && lc.fillRect(...at(s, t % TW * TS, (t / TW | 0) * TS), TS * K, TS * K));
+      if (s === on && info.view) {
+        lc.strokeStyle = '#ffec27'; lc.lineWidth = 4; lc.setLineDash([12, 8]); lc.beginPath();
+        info.view.forEach(([x, y]) => lc.lineTo(...at(on, x, y)));
+        lc.closePath(); lc.stroke(); lc.setLineDash([]);
+      }
+      lc.restore();
+    }
+  }
+  // The guide (sized by CSS, to a tile's shape), coloured by how the frame went; and a dot on each
+  // target it recognised, where the cropped video shows it
+  $('guide').style.setProperty('--tile', QW / QH);
+  let doneTill = 0;
+  function guide(info = {}, vw = 1, vh = 1) {
+    const f = $('finder').getBoundingClientRect();
+    // The tile under the middle of the view (or the gutter round it): done already, or not one the cart takes?
+    const c = info.view && [0, 1].map(k => info.view.reduce((a, p) => a + p[k], 0) / 4), all = info.tiles || tiles;
+    const t = c ? TILES.findIndex(([x0, y0, x1, y1]) => c[0] >= x0 - 16 && c[0] < x1 + 16 && c[1] >= y0 - 16 && c[1] < y1 + 16) : -1;
+    let lock = t >= 0 && all && !(all[t] < 1) ? 'done' : info.view && info.mod >= 2.5 ? 'read' : info.locks?.length ? 'near' : '';
+    // The check holds through frames that lose the fix (blur, a jolt) for a moment, so it doesn't flicker;
+    // a frame that finds another tile still switches at once
+    if (lock === 'done') doneTill = performance.now() + 800;
+    else if (!info.view && performance.now() < doneTill) lock = 'done';
+    $('guide').dataset.lock = lock;
+    const cv = Object.assign($('marks'), { width: f.width, height: f.height }), ctx = cv.getContext('2d'), k = Math.max(f.width / vw, f.height / vh);
+    for (const [x, y] of info.locks || []) {
+      const X = (f.width - vw * k) / 2 + x * k, Y = (f.height - vh * k) / 2 + y * k;
+      ctx.fillStyle = '#000'; ctx.fillRect(X - 5, Y - 5, 10, 10);
+      ctx.fillStyle = '#ffec27'; ctx.fillRect(X - 3, Y - 3, 6, 6);
     }
   }
 
-  // Nearest-neighbour upscale, so neither the screen nor the printer blurs the pixels
-  function upscale(rgba, w, h, k, into, x = 0, y = 0) {
-    const small = new OffscreenCanvas(w, h);
+  // PICO-8-style square-wave blips: [midi note, seconds] in a row. Set up on the Scan tap, as
+  // browsers only allow sound after one.
+  let audio;
+  function blip(notes) {
+    let t = audio?.currentTime;
+    for (const [n, d] of audio ? notes : []) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = 'square'; o.frequency.value = 440 * 2 ** ((n - 69) / 12);
+      g.gain.setValueAtTime(0.06, t); g.gain.linearRampToValueAtTime(0, t + d);
+      o.connect(g).connect(audio.destination); o.start(t); o.stop(t + d); t += d;
+    }
+  }
+
+  // Draws w x h pixels into a canvas at (x, y), k times bigger, nearest-neighbour, so neither the
+  // screen nor the printer blurs them
+  function upscale(rgba, w, h, k, into, x, y) {
+    const small = new OffscreenCanvas(w, h), ctx = into.getContext('2d');
     small.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
-    const cv = into || Object.assign(document.createElement('canvas'), { width: w * k, height: h * k }), ctx = cv.getContext('2d');
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(small, x, y, w * k, h * k);
-    return cv;
   }
   // The cart with its alpha made all-or-nothing: PICO-8 hides data in the low alpha bits
   const solid = rgba => rgba.map((v, i) => i % 4 === 3 ? (v < 128 ? 0 : 255) : v);
 
-  // PICO-8's 3x5 font, 15 bits per glyph, so the back is lettered like the front
+  // PICO-8's 3x5 font, 15 bits per glyph, so the sheet is lettered like the cart
   const FONT = Object.fromEntries('A7bed B7baf C3923 D6b6f E79a7 F79a4 G392f H5bed I7497 J7496 K5bad L4927 M7f6d N6b6d O3b6e P7be4 Q2b73 R7bad S39ce T7492 U5b6b V5b7a W5b7f X5aad Y5bcf Z72a7 07b6f 16497 273e7 372cf 45bc9 579cf 649ef 77249 87bef 97bc9 .0002 /1494 -01c0'
     .split(' ').map(g => [g[0], parseInt(g.slice(1), 16)]));
-  const CREDIT = [['GENERATED WITH P8PER', 255], ['GITHUB.COM/GREENER-DOT-CA/P8PER', 160]];
+  const CREDIT = [['GENERATED WITH P8PER', 95], ['GITHUB.COM/GREENER-DOT-CA/P8PER', 160]];
 
-  // The back of the card, 16 px per cart pixel: the cart's own shape (mirrored, so the notch and
-  // corners line up through the paper) in the cart's body colour, with the code on a black panel
-  // and a credit under it.
-  function backCanvas(rgba, grid) {
-    const count = new Map();
-    let body = 0, most = 0;
-    for (let i = 0; i < 160 * 205; i++) {
-      if (i % 160 >= 6 && i % 160 < 154 || rgba[i * 4 + 3] < 128) continue; // body colour = commonest along the side edges
-      const key = rgba[i * 4] << 16 | rgba[i * 4 + 1] << 8 | rgba[i * 4 + 2], n = (count.get(key) || 0) + 1;
-      count.set(key, n);
-      if (n > most) { most = n; body = key; }
+  // One side of a sheet to fold in quarters, printed side out: on the front (on = 0) the code on three
+  // quarters, and the cart upright on the top-left quarter, which becomes the cover; on the back
+  // (on = 1, no cart needed) the code on all four. With no grid, blank paper: no code, no marks.
+  function sheetCanvas(rgba, grid, on) {
+    const cv = Object.assign(document.createElement('canvas'), { width: PW, height: PH }), ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH);
+    ctx.fillStyle = '#c2c3c7'; // fold lines, dotted
+    for (let x = 0; x < PW; x += 16) ctx.fillRect(x, PH / 2 - 1, 8, 2);
+    for (let y = 0; y < PH; y += 16) ctx.fillRect(PW / 2 - 1, y, 2, 8);
+    const w = 2 * QP, code = new Uint8Array(w * R * 4);
+    if (grid) for (const [x0, y0, x1, y1] of TILES) if (side(x0) === on) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) code.set([...PALETTE[grid[y * 2 * w + x]], 255], (y * w + x - on * w) * 4);
+    upscale(code, w, R, M, cv, OX, OY);
+    if (on) return cv;
+    upscale(solid(rgba), 160, 205, COVER.k, cv, COVER.x, COVER.y);
+    // The credit runs down the cover's folded edge, like a book's spine: in the strip between the
+    // cart and the fold, top to bottom, letters turned a quarter clockwise
+    const tx = Math.round(PW / 2 - 35 - 7), length = CREDIT.reduce((n, [text]) => n + text.length * 12 + 24, -24);
+    let ty = Math.round(PH / 4 - length / 2);
+    for (const [text, grey] of CREDIT) {
+      ctx.fillStyle = `rgb(${grey},${grey},${grey})`;
+      for (const ch of text) {
+        for (let b = 0; b < 15; b++) if (FONT[ch] >> 14 - b & 1) ctx.fillRect(tx + (4 - (b / 3 | 0)) * 3, ty + b % 3 * 3, 3, 3);
+        ty += 12;
+      }
+      ty += 24;
     }
-    const shape = new Uint8Array(160 * 205 * 4);
-    for (let y = 0; y < 205; y++) for (let x = 0; x < 160; x++)
-      if (rgba[(y * 160 + 159 - x) * 4 + 3] >= 128) shape.set([body >> 16, body >> 8 & 255, body & 255, 255], (y * 160 + x) * 4);
-    CREDIT.forEach(([text, grey], row) => [...text].forEach((ch, i) => {
-      for (let b = 0; b < 15; b++) if (FONT[ch] >> 14 - b & 1)
-        shape.set([grey, grey, grey, 255], ((190 + row * 7 + (b / 3 | 0)) * 160 + 80 - text.length * 2 + i * 4 + b % 3) * 4);
-    }));
-    const cv = upscale(shape, 160, 205, 16), ctx = cv.getContext('2d');
-    ctx.fillRect(68, 36, C * 8 + 64, R * 8 + 64); // the scanner needs 4 modules of black around the code
-    const code = new Uint8Array(C * R * 4);
-    grid.forEach((v, i) => code.set([...PALETTE[v], 255], i * 4));
-    upscale(code, C, R, 8, cv, 100, 68);
     return cv;
   }
 
   function buffers(cv) {
     const { data } = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height), n = cv.width * cv.height;
-    const rgb = new Uint8Array(n * 3), alpha = new Uint8Array(n);
-    for (let i = 0; i < n; i++) { rgb[i * 3] = data[i * 4]; rgb[i * 3 + 1] = data[i * 4 + 1]; rgb[i * 3 + 2] = data[i * 4 + 2]; alpha[i] = data[i * 4 + 3]; }
-    return { w: cv.width, h: cv.height, rgb, alpha };
+    const rgb = new Uint8Array(n * 3);
+    for (let i = 0; i < n; i++) { rgb[i * 3] = data[i * 4]; rgb[i * 3 + 1] = data[i * 4 + 1]; rgb[i * 3 + 2] = data[i * 4 + 2]; }
+    return { w: cv.width, h: cv.height, rgb };
   }
 
   // Put a cart in the slot, however it got here
+  // The cart on the screen, as big as fits with a margin: a whole number of the screen's own
+  // pixels to each of its own where that's 2 or more, so it stays crisp
+  function art() {
+    const n = $('shown').getBoundingClientRect(), d = devicePixelRatio;
+    const fit = Math.min((n.width - 24) / 160, (n.height - 24) / 205), k = fit * d >= 2 ? Math.floor(fit * d) / d : fit;
+    Object.assign($('art').style, { width: 160 * k + 'px', height: 205 * k + 'px' });
+  }
+  addEventListener('resize', art);
+
   async function insert({ name, rgba }) {
     name ||= 'cart';
     state('loaded');
-    $('slot').append(Object.assign(upscale(solid(rgba), 160, 205, 1), { className: 'cart' }));
-    Object.assign($('save'), { href: URL.createObjectURL(new Blob([await pngEncode(rgba, 160, 205)], { type: 'image/png' })), download: name + '.p8.png' });
+    // The cart is a link to its file, so the browser's own long-press menu has it; in a new tab, so
+    // opening it keeps this page. (Not the sheet: Safari's menu can't do anything with a page-made .pdf.)
+    const png = URL.createObjectURL(new Blob([await pngEncode(rgba, 160, 205)], { type: 'image/png' }));
+    $('art').src = png;
+    for (const a of [$('save'), $('cart')]) Object.assign(a, { href: png, download: name + '.p8.png' });
     $('sheet').hidden = true;
+    let sheets = [sheetCanvas(rgba, null, 0)];
     try {
-      const { grid } = await encode(rgba, name);
-      const sheet = await pdf(buffers(upscale(solid(rgba), 160, 205, 8)), buffers(backCanvas(rgba, grid)));
-      Object.assign($('sheet'), { href: URL.createObjectURL(sheet), download: name + '.p8.pdf', hidden: false });
-      say(`${name} · print 2-sided, flip on long edge, 100%`);
-    } catch (err) { say(`${name} · no printable cart: ${err.message}`); }
+      const { grid, sides } = await encode(rgba, name);
+      sheets = [sheetCanvas(rgba, grid, 0), sheetCanvas(rgba, grid, 1)].slice(0, sides);
+      Object.assign($('sheet'), { href: URL.createObjectURL(await pdf(sheets.map(buffers))), download: name + '.p8.pdf', hidden: false });
+    } catch (err) { alert(`Can't print: ${err.message.replace(/^cart (is )?/, '')}.`); }
+    art();
+    if (document.body.dataset.state === 'loaded') $('pins').after(pages([view(sheets[0]), sheets[1] ? view(sheets[1]) : blank.back])); // unless ejected meanwhile
   }
 
   function pixels(source, w, h) {
     const ctx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(source, 0, 0);
+    ctx.drawImage(source, 0, 0, w, h);
     return ctx.getImageData(0, 0, w, h);
   }
+  const paint = () => new Promise(r => requestAnimationFrame(() => setTimeout(r))); // let the screen catch up between frames
 
-  // A .p8.png goes straight in; any other image is treated as a photo of a card
+  // The screen has no words, so a failure gets the browser's own box
   async function load(file) {
     if (!file) return;
-    say('Reading…');
-    try {
-      const png = await pngDecode(new Uint8Array(await file.arrayBuffer())).catch(() => null);
-      if (png?.w === 160 && png.h === 205) return await insert({ name: file.name.split('.')[0], rgba: png.rgba });
-      const bmp = await createImageBitmap(file);
-      await insert(await scan(pixels(bmp, bmp.width, bmp.height)));
-    } catch (err) { say('No cart found: ' + err.message); }
+    const png = await pngDecode(new Uint8Array(await file.arrayBuffer())).catch(() => null);
+    if (png?.w === 160 && png.h === 205) return insert({ name: file.name.split('.')[0], rgba: png.rgba });
+    alert("That isn't a PICO-8 cart. Upload a .p8.png.");
   }
 
   $('file').onchange = e => { load(e.target.files[0]); e.target.value = ''; };
@@ -166,23 +340,49 @@
   $('slot').ondragover = e => { e.preventDefault(); $('slot').classList.add('over'); };
   $('slot').ondragleave = () => $('slot').classList.remove('over');
   $('slot').ondrop = e => { e.preventDefault(); $('slot').classList.remove('over'); state('empty'); load(e.dataTransfer.files[0]); };
-  $('eject').onclick = $('cancel').onclick = () => { state('empty'); say(HINT); };
+  $('eject').onclick = $('cancel').onclick = () => state('empty');
 
+  // Scanning: the camera's frames go to the sweep (in a worker, so the page stays smooth), which
+  // reads whatever part of the sheet each one shows, until there's enough to rebuild the cart. One
+  // frame at a time: the next is grabbed as soon as the last is read. 1080p is plenty close up.
+  // Where the camera allows: focus kept on continuously, and the torch if the paper is dim. (Not zoom:
+  // a browser may zoom by enlarging the picture, leaving half the detail a module.)
   $('cam').onclick = async () => {
-    const video = $('video');
+    audio ||= new AudioContext(); audio.resume();
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } } });
-    } catch (err) { say('No camera: ' + err.message); return; }
-    const mine = stream;
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    } catch (err) { alert(err.name === 'NotAllowedError' ? 'The camera is blocked: allow it, then scan again.' : "Can't open the camera: scanning needs one, over https."); return; }
+    // A fresh video element each scan: iOS Safari can keep a reused one's old size and crop when its stream changes
+    const mine = stream, video = $('video').cloneNode(), worker = new Worker('./sweep-worker.js', { type: 'module' });
+    $('video').replaceWith(video);
+    const track = mine.getVideoTracks()[0], caps = track.getCapabilities?.() || {}, want = {};
+    if (caps.focusMode?.includes('continuous')) want.focusMode = 'continuous';
+    track.applyConstraints({ advanced: [want] }).catch(() => {});
+    let lit = !caps.torch; // or no torch to light
+    tiles = null; on = 0; paper = rough = null;
     video.srcObject = mine;
     state('scanning');
-    say('Fill the slot with the colour code.');
     await video.play();
-    // ponytail: decodes on the main thread, so the preview stutters; move scan() to a worker if that grates
+    fill({});
+    guide({}, video.videoWidth || 1, video.videoHeight || 1);
     while (mine.active) {
-      try { const cart = await scan(pixels(video, video.videoWidth, video.videoHeight)); if (mine.active) await insert(cart); break; }
-      catch { /* no card in this frame; keep looking */ }
-      await new Promise(r => setTimeout(r, 250));
+      if (!video.videoWidth) { await paint(); continue; }
+      const w = video.videoWidth, h = video.videoHeight, frame = pixels(video, w, h);
+      if (!lit) { // dim: the middle row's average brightness under a quarter
+        const row = frame.data.subarray((h >> 1) * w * 4, ((h >> 1) + 1) * w * 4);
+        if (row.reduce((a, v, i) => i % 4 === 3 ? a : a + v, 0) / (3 * w) < 64) { lit = true; track.applyConstraints({ advanced: [{ torch: true }] }).catch(() => {}); }
+      }
+      const reply = new Promise(r => worker.onmessage = e => r(e.data));
+      worker.postMessage({ frame }, [frame.data.buffer]);
+      const { info, cart, patch, error } = await reply;
+      if (!mine.active) break;
+      if (error) { state('empty'); alert(`Scanning broke: ${error}`); break; }
+      $('led').classList.toggle('tick'); // a heartbeat: one flicker a frame read
+      if (cart) { blip([[72, 0.08], [76, 0.08], [79, 0.08], [84, 0.24]]); await insert(cart); break; } // the cart's in: a jingle
+      if (info.fresh?.length) blip([[84, 0.05], [91, 0.1]]); // a tile locked
+      guide(info, w, h);
+      fill(info, patch);
     }
+    worker.terminate();
   };
 </script>

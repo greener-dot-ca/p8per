@@ -1,55 +1,83 @@
-// PICO-8 cart <-> printable 8-colour code. No dependencies; runs in browsers and Node 18+.
+// PICO-8 cart <-> printable black and white code. No dependencies; runs in browsers and Node 18+.
 //
 // Code format:
-// - C x R modules on black. Data colours are PICO-8 8-15; symbol value = index in PALETTE,
-//   ordered so the lookalike pairs (red/pink, orange/yellow, blue/lavender) differ by one bit.
-// - corners: 14x14 finder (2 peach, 2 black, 6x6 centre: TL red, TR green, BR yellow, BL blue)
-//   inside a 16x16 black block
-// - beside each finder: the 8 palette colours as 2x2 swatches (outer two rows), then nsym as
-//   three base-8 digits, 2x2 each (next two rows)
-// - 5x5 alignment targets (green, black ring, green dot) on a ~32-module lattice
-// - data: every other module, row-major, 3 bits each, XORed with mask(). The bytes are NBLK
-//   interleaved Reed-Solomon blocks of BLK bytes (nsym parity each) holding
+// - a letter sheet, both sides, folded in quarters: on each quarter but the cover (the front's top
+//   left) one TILE of 0.4 mm black and white modules, with 0.25 in of white round it, read and
+//   corrected on its own. A cart takes the tiles it needs, in order: the front's three, then the
+//   back's four (QUARTERS). All the modules are on one C x R grid, the front's quarters then the back's.
+//   Black and white because a phone photo keeps brightness sharp and smears colour: a test sheet
+//   read black/white at under 1% wrong, and 0.4 mm colour at over a third. 0.4 mm so the biggest
+//   cart PICO-8 can make (45 KB packed) fits one sheet: 0.6 mm read better from 20 cm, but a sheet
+//   held only 24 KB.
+// - alignment targets (TARGETS) on a ~64-module lattice per tile, so a phone can read the sheet a
+//   part at a time: a 9x9 bullseye (black border, white ring, black ring, 3x3 white centre: 1:1:3:1:1
+//   at one module a unit) over a 9 x 3 strip of its ID (lattice column and row, 4 bits each), a
+//   CRC-10 of the ID, the format's 8 bits (how many tiles the cart takes, 6 bits, and its
+//   error-correction level, 2 bits, LEVELS), and a white bit. So any one target says where it is,
+//   and how many tiles the cart takes.
+// - data: the rest of each tile, its modules row-major, 1 bit each (white = 1), XORed with MASK; the
+//   bytes are interleaved Reed-Solomon blocks (up to 255 bytes, parity the level's share), whose
+//   data is the tile's share of the payload and its crc32 (so a tile read with its parity nearly all
+//   spent on gaps can't pass off a wrong guess). Unused tiles are blank, targets and all. The shares hold
 //   u32 len | zlib(raw) | u32 crc32, raw = name | palette | pixel indices | cart bytes,
 //   which is enough to rebuild the .p8.png pixel for pixel.
 
-export const C = 295, R = 361; // 0.4 mm modules on a half-letter card
-export const PALETTE = [[255, 0, 77], [255, 119, 168], [255, 163, 0], [255, 236, 39], [41, 173, 255], [131, 118, 156], [0, 228, 54], [255, 204, 170], [0, 0, 0]];
-const RED = 0, YELLOW = 3, BLUE = 4, GREEN = 6, PEACH = 7, BLACK = 8;
-const FMT = 16, SWATCH = 32, DATA = 255; // LAYOUT codes besides the fixed colours 0-8
+// The sheet, in printer pixels of 0.1 mm (254 dpi): letter, both sides, folded in quarters. Each
+// quarter but the cover (the front's top left) can hold one tile of code, QW x QH modules of
+// 0.4 mm (M px) with 0.25 in (6.35 mm) of white all round: to the paper's edge (past any printer's
+// margin) and either side of the folds, so each quarter reads on its own and the folded cart's
+// edges stay clean. A cart takes as many tiles as it needs, in order: the front's three (top right,
+// bottom left, bottom right), then the back's four (bottom left, bottom right, top right, top left).
+// Modules are numbered on one grid of C x R: the front's two columns of quarters, then the back's,
+// QP x QR modules apart (half a page), so a module's place on the grid is its place on its page.
+export const PW = 2159, PH = 2794, M = 4;
+export const QP = Math.round(PW / 2 / M), QR = Math.round(PH / 2 / M), QW = Math.floor((PW / 2 - 127) / M), QH = Math.floor((PH / 2 - 127) / M);
+export const OX = Math.round((PW / 2 - QW * M) / 2), OY = Math.round((PH / 2 - QH * M) / 2); // a page's first module, in printer pixels
+export const C = 4 * QP, R = 2 * QR;
+export const PALETTE = [[0, 0, 0], [255, 255, 255]]; // the code's black and white
+const BLACK = 0, WHITE = 1;
+const PAPER = 12, FMT = 16, DATA = 255; // LAYOUT codes besides the fixed colours
 const N = 160 * 205;
+const LEVELS = [0.1, 0.15, 0.2, 0.3]; // error correction: the share of each block that's parity
 
-const lattice = n => { const k = Math.ceil((n - 49) / 32) + 1; return Array.from({ length: k }, (_, i) => 24 + Math.floor(i * (n - 49) / (k - 1))); };
-export const LX = lattice(C), LY = lattice(R); // alignment target centres
-const CORNERS = [[0, 0, RED], [1, 0, GREEN], [1, 1, YELLOW], [0, 1, BLUE]]; // TL TR BR BL
+// The tiles, [x0, y0, x1, y1) on the grid, in order. As laid out, front then back:  C 1 | 7 6
+//                                                                                   2 3 | 4 5
+const QUARTERS = [[1, 0], [0, 1], [1, 1], [2, 1], [3, 1], [3, 0], [2, 0]];
+export const TILES = QUARTERS.map(([i, j]) => [i * QP, j * QR, i * QP + QW, j * QR + QH]), NT = TILES.length;
+export const side = x => x >= 2 * QP ? 1 : 0; // 0 the front, 1 the back
+const E = 30; // targets keep this far in from a tile's edges: 4 a tile across and 5 down, so an ID's column fits 4 bits
+const lattice = (a, b) => { const n = b - a - 2 * E - 1, k = Math.ceil(n / 64) + 1; return Array.from({ length: k }, (_, i) => a + E + Math.floor(i * n / (k - 1))); };
+const LX = [0, 1, 2, 3].flatMap(i => lattice(i * QP, i * QP + QW)), LY = [0, 1].flatMap(j => lattice(j * QR, j * QR + QH)); // alignment target centres, each quarter its own
+const TARGETS = []; // [column, row, x, y] of each target printed, x y its centre module
+const crc10 = id => { let r = id << 10; for (let b = 17; b >= 10; b--) if (r >> b & 1) r ^= 0x633 << b - 10; return (r ^ 0x155) & 0x3ff; }; // xored, so an all-black strip isn't a valid ID (and with a value no earlier layout used)
 
-const LAYOUT = new Uint8Array(C * R).fill(DATA);
+const LAYOUT = new Uint8Array(C * R).fill(PAPER);
 {
-  const set = (x, y, v) => LAYOUT[y * C + x] = v;
+  const set = (x, y, v) => { if (x >= 0 && y >= 0 && x < C && y < R) LAYOUT[y * C + x] = v; };
   const ring = (dx, dy, n) => Math.min(dx, dy, n - 1 - dx, n - 1 - dy);
-  for (const [r, b, col] of CORNERS) {
-    for (let dy = 0; dy < 16; dy++) for (let dx = 0; dx < 16; dx++) set(r * (C - 16) + dx, b * (R - 16) + dy, BLACK);
-    for (let dy = 0; dy < 14; dy++) for (let dx = 0; dx < 14; dx++) {
-      const d = ring(dx, dy, 14) >> 1;
-      set(r * (C - 14) + dx, b * (R - 14) + dy, d === 0 ? PEACH : d === 1 ? BLACK : col);
-    }
-    for (let j = 0; j < 2; j++) {
-      for (let i = 0; i < 16; i++) set((r ? C - 32 : 16) + i, b ? R - 1 - j : j, SWATCH + (i >> 1));
-      for (let i = 0; i < 6; i++) set((r ? C - 22 : 16) + i, b ? R - 3 - j : 2 + j, FMT + (i >> 1));
-    }
-  }
-  for (const cy of LY) for (const cx of LX) for (let dy = 0; dy < 5; dy++) for (let dx = 0; dx < 5; dx++)
-    set(cx - 2 + dx, cy - 2 + dy, ring(dx, dy, 5) === 1 ? BLACK : GREEN);
+  for (const [x0, y0, x1, y1] of TILES) for (let y = y0; y < y1; y++) LAYOUT.fill(DATA, y * C + x0, y * C + x1);
+  const clear = (cx, cy) => { for (let dy = -4; dy <= 7; dy++) for (let dx = -4; dx <= 4; dx++) if (LAYOUT[(cy + dy) * C + cx + dx] !== DATA) return false; return true; };
+  LY.forEach((cy, j) => LX.forEach((cx, i) => {
+    if (!clear(cx, cy)) return;
+    for (let dy = 0; dy < 9; dy++) for (let dx = 0; dx < 9; dx++) set(cx - 4 + dx, cy - 4 + dy, ring(dx, dy, 9) % 2 ? WHITE : ring(dx, dy, 9) < 3 ? BLACK : WHITE);
+    const id = i << 4 | j, word = id << 10 | crc10(id); // 18 bits, then the format's 8, then a white bit
+    for (let t = 0; t < 27; t++) set(cx - 4 + t % 9, cy + 5 + (t / 9 | 0), t < 18 ? (word >> 17 - t & 1 ? WHITE : BLACK) : t < 26 ? FMT + t - 18 : WHITE);
+    TARGETS.push([i, j, cx, cy]);
+  }));
 }
-const DATA_POS = [];
+const BLANK = LAYOUT.map(v => v >= FMT && v <= DATA ? WHITE : v); // the sheet with no cart: the code all white
+export const DATA_POS = []; // the data modules
 LAYOUT.forEach((v, i) => v === DATA && DATA_POS.push(i));
-const CAP = DATA_POS.length * 3 >> 3, NBLK = Math.ceil(CAP / 255), BLK = Math.floor(CAP / NBLK);
-
-function mask(n) {
-  const m = new Uint8Array(n);
-  for (let i = 0, x = 1; i < n; i++) { x = Math.imul(x, 1103515245) + 12345 & 0x7fffffff; m[i] = x >> 16 & 7; }
-  return m;
-}
+const MASK = new Uint8Array(C * R);
+for (let i = 0, x = 1; i < C * R; i++) { x = Math.imul(x, 1103515245) + 12345 & 0x7fffffff; MASK[i] = x >> 16 & 1; }
+const TILE_OF = new Int8Array(C * R).fill(-1), TILE_POS = TILES.map(([x0, y0, x1, y1], t) => {
+  const pos = [];
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (LAYOUT[y * C + x] === DATA) { pos.push(y * C + x); TILE_OF[y * C + x] = t; }
+  return pos;
+});
+const GEOM = TILE_POS.map(pos => { const cap = pos.length >> 3, nb = Math.ceil(cap / 255); return { nb, L: Math.floor(cap / nb) }; }); // nb blocks of L bytes
+const nsymOf = (t, lv) => Math.max(2, Math.round(GEOM[t].L * LEVELS[lv]));
+const dataOf = (t, lv) => GEOM[t].nb * (GEOM[t].L - nsymOf(t, lv)) - 4; // the bytes of payload a tile holds, besides its own crc32
 
 // ---- zlib, crc32, PNG ----
 
@@ -109,10 +137,8 @@ export async function pngEncode(rgba, w, h) {
 
 // ---- PDF ----
 
-// Two letter pages for duplex printing (flip on long edge): two fronts, then two backs, with
-// dotted cut lines on the front. The cards lie sideways, one above the other, so each fills half
-// the sheet. front/back = { w, h, rgb, alpha } pixel buffers.
-export async function pdf(front, back) {
+// Letter pages, each filled edge to edge by { w, h, rgb }, an opaque pixel buffer (front, and back if any)
+export async function pdf(pages) {
   const parts = [], offs = [], enc = new TextEncoder();
   let len = 0;
   const put = d => { const b = typeof d === 'string' ? enc.encode(d) : d; parts.push(b); len += b.length; };
@@ -122,29 +148,18 @@ export async function pdf(front, back) {
     if (stream) { put('stream\n'); put(stream); put('\nendstream\n'); }
     put('endobj\n');
   };
-  const W = 612, H = 792, cw = 369, ch = cw * 205 / 160, x = (W - ch) / 2, ys = [18, 405]; // card is cw x ch pt, upright
-  const f = v => +v.toFixed(2);
-  let p1 = '0.5 G 0.5 w [2 3] 0 d ';
-  for (const v of [x, x + ch]) p1 += `${f(v)} 0 m ${f(v)} ${H} l S `;
-  for (const v of ys.flatMap(y => [y, y + cw])) p1 += `0 ${v} m ${W} ${v} l S `;
-  // Front: card top -> page left. Back: mirrored x, card top -> page right, so it reads upright
-  // when the cut card is turned over like a book page.
-  for (const y of ys) p1 += `q 0 ${cw} ${f(-ch)} 0 ${f(x + ch)} ${y} cm /I Do Q `;
-  const p2 = ys.map(y => `q 0 ${-cw} ${f(ch)} 0 ${f(W - x - ch)} ${y + cw} cm /I Do Q `).join('');
+  const n = 3 + 3 * pages.length; // objects: catalog, page tree, then page, contents, image per page
   put('%PDF-1.4\n');
   obj(1, '/Type/Catalog/Pages 2 0 R');
-  obj(2, `/Type/Pages/Kids[3 0 R 4 0 R]/Count 2/MediaBox[0 0 ${W} ${H}]`);
-  [p1, p2].forEach((c, i) => {
-    obj(3 + i, `/Type/Page/Parent 2 0 R/Resources<</XObject<</I ${7 + i} 0 R>>>>/Contents ${5 + i} 0 R`);
-    obj(5 + i, '', enc.encode(c));
-  });
-  for (const [i, im] of [front, back].entries()) {
-    const head = `/Type/XObject/Subtype/Image/Width ${im.w}/Height ${im.h}/BitsPerComponent 8/Filter/FlateDecode/ColorSpace`;
-    obj(7 + i, `${head}/DeviceRGB/SMask ${9 + i} 0 R`, await deflate(im.rgb));
-    obj(9 + i, `${head}/DeviceGray`, await deflate(im.alpha));
+  obj(2, `/Type/Pages/Kids[${pages.map((_, i) => `${3 + 3 * i} 0 R`).join(' ')}]/Count ${pages.length}/MediaBox[0 0 612 792]`);
+  for (const [i, pg] of pages.entries()) {
+    const o = 3 + 3 * i;
+    obj(o, `/Type/Page/Parent 2 0 R/Resources<</XObject<</I ${o + 2} 0 R>>>>/Contents ${o + 1} 0 R`);
+    obj(o + 1, '', enc.encode('q 612 0 0 792 0 0 cm /I Do Q'));
+    obj(o + 2, `/Type/XObject/Subtype/Image/Width ${pg.w}/Height ${pg.h}/BitsPerComponent 8/ColorSpace/DeviceRGB/Interpolate false/Filter/FlateDecode`, await deflate(pg.rgb));
   }
   const xref = len;
-  put(`xref\n0 11\n0000000000 65535 f \n${offs.slice(1).map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<</Size 11/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`);
+  put(`xref\n0 ${n}\n0000000000 65535 f \n${offs.slice(1).map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<</Size ${n}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`);
   return new Blob(parts, { type: 'application/pdf' });
 }
 
@@ -173,38 +188,50 @@ function rsEncode(msg, g) {
   return out;
 }
 
-// Corrects c in place; throws when more than nsym/2 bytes are wrong.
-function rsDecode(c, nsym) {
-  const n = c.length, S = new Uint8Array(nsym);
-  let bad = 0;
-  for (let j = 0; j < nsym; j++) { let s = 0; for (let i = 0; i < n; i++) s = mul(s, EXP[j]) ^ c[i]; bad |= S[j] = s; }
-  if (!bad) return;
-  // Berlekamp-Massey -> error locator L, lowest degree first
-  let L = new Uint8Array(nsym + 1), B = new Uint8Array(nsym + 1), len = 0, m = 1, b = 1;
-  L[0] = B[0] = 1;
-  for (let i = 0; i < nsym; i++) {
-    let d = S[i];
-    for (let j = 1; j <= len; j++) d ^= mul(L[j], S[i - j]);
-    if (!d) { m++; continue; }
-    const T = L.slice(), q = div(d, b);
-    for (let j = 0; j + m <= nsym; j++) L[j + m] ^= mul(q, B[j]);
-    if (2 * len <= i) { len = i + 1 - len; B = T; b = d; m = 1; } else m++;
+// Polynomials as arrays, highest power first
+const pow2 = p => EXP[(p % 255 + 255) % 255];
+const inv = x => EXP[255 - LOG[x]];
+const pScale = (p, x) => p.map(v => mul(v, x));
+const pAdd = (p, q) => { const n = Math.max(p.length, q.length), r = new Array(n).fill(0); p.forEach((v, i) => r[i + n - p.length] = v); q.forEach((v, i) => r[i + n - q.length] ^= v); return r; };
+const pMul = (p, q) => { const r = new Array(p.length + q.length - 1).fill(0); q.forEach((b, j) => p.forEach((a, i) => r[i + j] ^= mul(a, b))); return r; };
+const pEval = (p, x) => p.reduce((y, v) => mul(y, x) ^ v, 0);
+
+// Corrects c in place, given the byte positions known to be missing (erase). Throws past
+// 2 * errors + gaps > nsym. (The errata decoder from
+// Wikiversity's "Reed-Solomon codes for coders": Forney syndromes, Berlekamp-Massey, Chien, Forney.)
+function rsDecode(c, nsym, erase = []) {
+  const n = c.length;
+  if (erase.length > nsym) throw new Error('too many gaps');
+  for (const e of erase) c[e] = 0;
+  const synd = [0];
+  for (let i = 0; i < nsym; i++) synd.push(pEval(c, pow2(i)));
+  if (synd.every(v => !v)) return;
+  const fs = synd.slice(1); // the syndromes with the gaps taken out
+  for (const e of erase) { const x = pow2(n - 1 - e); for (let j = 0; j < fs.length - 1; j++) fs[j] = mul(fs[j], x) ^ fs[j + 1]; }
+  let loc = [1], old = [1];
+  for (let i = 0; i < nsym - erase.length; i++) {
+    let d = fs[i];
+    for (let j = 1; j < loc.length; j++) d ^= mul(loc[loc.length - 1 - j], fs[i - j]);
+    old = [...old, 0];
+    if (d) {
+      if (old.length > loc.length) { const nw = pScale(old, d); old = pScale(loc, inv(d)); loc = nw; }
+      loc = pAdd(loc, pScale(old, d));
+    }
   }
-  const O = new Uint8Array(nsym); // evaluator = S * L mod x^nsym
-  for (let i = 0; i < nsym; i++) for (let j = 0; j <= Math.min(i, len); j++) O[i] ^= mul(L[j], S[i - j]);
-  let found = 0;
-  for (let p = 0; p < n; p++) { // Chien search; p is the power of x, byte index n-1-p
-    const xi = EXP[255 - p];
-    let l = 0, o = 0, dl = 0;
-    for (let j = len; j >= 0; j--) l = mul(l, xi) ^ L[j];
-    if (l) continue;
-    for (let j = nsym - 1; j >= 0; j--) o = mul(o, xi) ^ O[j];
-    for (let j = 1; j <= len; j += 2) dl ^= mul(L[j], EXP[(255 - p) * (j - 1) % 255]);
-    if (!dl) break;
-    c[n - 1 - p] ^= mul(EXP[p], div(o, dl)); // Forney
-    found++;
-  }
-  if (found !== len) throw new Error('too much damage to correct');
+  while (loc.length && !loc[0]) loc.shift();
+  const errs = loc.length - 1, rev = [...loc].reverse(), pos = [];
+  if (errs * 2 + erase.length > nsym) throw new Error('too much damage to correct');
+  for (let i = 0; i < n; i++) if (!pEval(rev, pow2(i))) pos.push(n - 1 - i);
+  if (pos.length !== errs) throw new Error('too much damage to correct');
+  const all = [...erase, ...pos], X = all.map(p => pow2(n - 1 - p));
+  const eloc = X.reduce((l, x) => pMul(l, [x, 1]), [1]);
+  const prod = pMul([...synd].reverse(), eloc), ev = prod.slice(prod.length - eloc.length);
+  X.forEach((x, i) => {
+    const xi = inv(x), d = X.reduce((t, y, j) => j === i ? t : mul(t, 1 ^ mul(xi, y)), 1);
+    if (!d) throw new Error('too much damage to correct');
+    c[all[i]] ^= div(mul(x, pEval(ev, xi)), d);
+  });
+  for (let i = 0; i < nsym; i++) if (pEval(c, pow2(i))) throw new Error('too much damage to correct');
 }
 
 // ---- cart <-> grid ----
@@ -237,85 +264,127 @@ function unpack(raw) {
   return { name, rgba };
 }
 
-// 160x205 RGBA cart pixels -> { grid: Uint8Array(C*R) of PALETTE indices, ecc: parity fraction }
+// 160x205 RGBA cart pixels -> { grid: Uint8Array(C*R) of PALETTE indices (data: 0 black, 1 white),
+// ecc: parity share, tiles: how many it takes, sides: of the paper it takes }. One side if it fits
+// there with 20% error correction or more, both sides if not; the most error correction that fits,
+// in as few tiles as hold it.
 export async function encode(rgba, name) {
-  const z = await deflate(pack(rgba, name));
-  const k = Math.ceil((z.length + 8) / NBLK), nsym = BLK - k;
-  // ponytail: no fallback for carts that don't fit; drop the label image from pack() if this ever fires
-  if (nsym < BLK / 10) throw new Error('cart is too big to fit on a card');
-  const payload = new Uint8Array(NBLK * k), dv = new DataView(payload.buffer);
+  const z = await deflate(pack(rgba, name)), need = z.length + 8;
+  let lv, n, room = 0;
+  for (const [most, least] of [[3, 2], [NT, 0]]) {
+    for (lv = LEVELS.length - 1; lv >= least; lv--) {
+      for (n = 0, room = 0; n < most && room < need;) room += dataOf(n++, lv);
+      if (room >= need) break;
+    }
+    if (room >= need) break;
+  }
+  if (room < need) throw new Error('cart is too big to fit on a sheet');
+  const payload = new Uint8Array(room), dv = new DataView(payload.buffer);
   dv.setUint32(0, z.length); payload.set(z, 4); dv.setUint32(4 + z.length, crc32(z));
-  const gen = rsGen(nsym), stream = new Uint8Array(NBLK * BLK + 2);
-  for (let b = 0; b < NBLK; b++) rsEncode(payload.subarray(b * k, b * k + k), gen).forEach((v, j) => stream[j * NBLK + b] = v);
-  const grid = LAYOUT.slice(), m = mask(DATA_POS.length);
-  DATA_POS.forEach((pos, i) => {
-    const o = i * 3, w = stream[o >> 3] << 8 | stream[(o >> 3) + 1];
-    grid[pos] = (w >> 13 - (o & 7) & 7) ^ m[i];
-  });
-  LAYOUT.forEach((v, i) => {
-    if (v >= SWATCH && v < DATA) grid[i] = v - SWATCH;
-    else if (v >= FMT && v < SWATCH) grid[i] = nsym >> 6 - 3 * (v - FMT) & 7;
-  });
-  return { grid, ecc: nsym / BLK };
+  const grid = BLANK.slice(), f = n << 2 | lv;
+  for (let t = 0, off = 0; t < n; t++) {
+    const { nb, L } = GEOM[t], nsym = nsymOf(t, lv), k = L - nsym, gen = rsGen(nsym), stream = new Uint8Array((TILE_POS[t].length >> 3) + 1);
+    const share = new Uint8Array(nb * k), d = share.length - 4;
+    share.set(payload.subarray(off, off += d)); new DataView(share.buffer).setUint32(d, crc32(share.subarray(0, d)));
+    for (let b = 0; b < nb; b++) rsEncode(share.subarray(b * k, b * k + k), gen).forEach((v, j) => stream[j * nb + b] = v);
+    TILE_POS[t].forEach((p, i) => grid[p] = (stream[i >> 3] >> 7 - (i & 7) & 1) ^ MASK[p]);
+  }
+  LAYOUT.forEach((v, i) => { if (v >= FMT && v < DATA) grid[i] = f >> 7 - (v - FMT) & 1; });
+  for (const [x0, y0, x1, y1] of TILES.slice(n)) for (let y = y0; y < y1; y++) grid.fill(WHITE, y * C + x0, y * C + x1); // the tiles it doesn't take: blank
+  return { grid, ecc: LEVELS[lv], tiles: n, sides: n > 3 ? 2 : 1 };
 }
 
-// Symbols (0-7 per module, fixed modules ignored) -> { name, rgba }
-export async function decodeGrid(sym) {
-  let nsym = 0;
-  for (let d = 0; d < 3; d++) {
-    const votes = new Array(8).fill(0);
-    LAYOUT.forEach((v, i) => v === FMT + d && votes[sym[i] & 7]++);
-    nsym = nsym << 3 | votes.indexOf(Math.max(...votes));
+// The format bits, by majority over the targets whose IDs read right (blank tiles have none):
+// { n tiles, lv level }, or null if unsure
+function format(sym, seen) {
+  const ones = new Array(8).fill(0), all = new Array(8).fill(0);
+  for (const [i, j, cx, cy] of TARGETS) {
+    const at = t => (cy + 5 + (t / 9 | 0)) * C + cx - 4 + t % 9;
+    if (seen && !Array.from({ length: 26 }, (_, t) => seen[at(t)]).every(Boolean)) continue;
+    let word = 0;
+    for (let t = 0; t < 18; t++) word = word << 1 | sym[at(t)] & 1;
+    if (word !== ((i << 4 | j) << 10 | crc10(i << 4 | j))) continue;
+    for (let d = 0; d < 8; d++) { ones[d] += sym[at(18 + d)] & 1; all[d]++; }
   }
-  const k = BLK - nsym;
-  if (nsym < 2 || k < 1) throw new Error('could not read the format marks');
-  const m = mask(DATA_POS.length), stream = new Uint8Array(NBLK * BLK);
-  DATA_POS.forEach((pos, i) => {
-    const v = (sym[pos] ^ m[i]) & 7;
-    for (let j = 0; j < 3; j++) if (v >> 2 - j & 1) stream[i * 3 + j >> 3] |= 128 >> (i * 3 + j & 7);
-  });
-  const payload = new Uint8Array(NBLK * k), blk = new Uint8Array(BLK);
-  for (let b = 0; b < NBLK; b++) {
-    for (let j = 0; j < BLK; j++) blk[j] = stream[j * NBLK + b];
-    rsDecode(blk, nsym);
-    payload.set(blk.subarray(0, k), b * k);
+  if (all.some(a => !a)) return null;
+  const f = ones.reduce((f, o, d) => f << 1 | (o * 2 > all[d]), 0), n = f >> 2;
+  return n >= 1 && n <= NT ? { n, lv: f & 3 } : null;
+}
+
+// One tile's bits -> { data (its payload bytes), stream (its corrected bytes) }, or throws
+function decodeTile(t, { lv }, sym, seen) {
+  const { nb, L } = GEOM[t], nsym = nsymOf(t, lv), k = L - nsym, stream = new Uint8Array(nb * L), gap = new Uint8Array(nb * L);
+  TILE_POS[t].forEach((p, i) => { if (i >= nb * L * 8) return; if ((sym[p] ^ MASK[p]) & 1) stream[i >> 3] |= 128 >> (i & 7); if (seen && !seen[p]) gap[i >> 3] = 1; });
+  const data = new Uint8Array(nb * k), blk = new Uint8Array(L);
+  for (let b = 0; b < nb; b++) {
+    const erase = [];
+    for (let j = 0; j < L; j++) { blk[j] = stream[j * nb + b]; if (gap[j * nb + b]) erase.push(j); }
+    rsDecode(blk, nsym, erase);
+    data.set(blk.subarray(0, k), b * k);
+    for (let j = 0; j < L; j++) stream[j * nb + b] = blk[j];
   }
+  const d = data.length - 4;
+  if (new DataView(data.buffer).getUint32(d) !== crc32(data.subarray(0, d))) throw new Error('tile checksum mismatch');
+  return { data: data.subarray(0, d), stream };
+}
+
+// The tiles' payload bytes, in order -> { name, rgba }
+async function assemble(parts) {
+  const payload = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  parts.reduce((off, p) => (payload.set(p, off), off + p.length), 0);
   const dv = new DataView(payload.buffer), len = dv.getUint32(0);
   if (len > payload.length - 8 || dv.getUint32(4 + len) !== crc32(payload.subarray(4, 4 + len))) throw new Error('checksum mismatch');
   return unpack(await inflate(payload.subarray(4, 4 + len)));
 }
 
-// ---- photo -> grid ----
-
-// Unit square -> quad [TL, TR, BR, BL], as coefficients of (au+bv+c, du+ev+f) / (gu+hv+1)
-export function squareToQuad([[x0, y0], [x1, y1], [x2, y2], [x3, y3]]) {
-  const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2, sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
-  const den = dx1 * dy2 - dx2 * dy1, g = (sx * dy2 - dx2 * sy) / den, h = (dx1 * sy - sx * dy1) / den;
-  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h];
+// Bits (0 black, 1 white per module, fixed modules ignored) -> { name, rgba }. seen, if given, says
+// which modules were read at all; the rest are gaps for the error correction to fill.
+export async function decodeGrid(sym, seen) {
+  const fmt = format(sym, seen);
+  if (!fmt) throw new Error('could not read the format marks');
+  const parts = [];
+  let bad = 0;
+  for (let t = 0; t < fmt.n; t++) try { parts.push(decodeTile(t, fmt, sym, seen).data); } catch { bad++; }
+  if (bad) throw new Error(`${bad} of ${fmt.n} tiles too damaged to read`);
+  return assemble(parts);
 }
 
-// Finds the four finders QR-style: a bright/dark 1:1:3:1:1 run pattern both ways. The data area
-// has no black in it, so there is little else in the code that can match.
-function findCorners({ data, width: W, height: H }) {
-  // Lit = brighter than 40% of the brightest thing nearby, so a shadow across the card doesn't
-  // turn the dimmer colours (lavender is 61% as bright as peach) into black.
-  const V = new Uint8Array(W * H), bs = Math.max(W, H) >> 6, BW = Math.ceil(W / bs), BH = Math.ceil(H / bs), peak = new Uint8Array(BW * BH);
-  for (let y = 0, i = 0, p = 0; y < H; y++) for (let x = 0; x < W; x++, i++, p += 4) {
-    const v = V[i] = Math.max(data[p], data[p + 1], data[p + 2]), q = (y / bs | 0) * BW + (x / bs | 0);
+// ---- reading: the sheet a part at a time ----
+
+// Each pixel's brightness (its brightest channel), at full size and at half (2 x 2 averaged)
+function bright({ data, width: W, height: H }) {
+  const V = new Uint8Array(W * H), w = W >> 1, h = H >> 1, half = new Uint8Array(w * h);
+  for (let i = 0, p = 0; i < W * H; i++, p += 4) V[i] = Math.max(data[p], data[p + 1], data[p + 2]);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = 2 * y * W + 2 * x; half[y * w + x] = V[i] + V[i + 1] + V[i + W] + V[i + W + 1] >> 2; }
+  return { V, half, w, h };
+}
+
+// Finds bullseyes QR-style in a brightness image: a bright/dark 1:1:3:1:1 run pattern both ways.
+// -> [{ x, y, u }], u the pattern's unit in px.
+function blobs(V, W, H) {
+  // Lit = 40% of the way from the darkest thing nearby to the brightest, so glare that lifts black
+  // doesn't hide a target, and a shadow doesn't turn grey paper black. Where there's little
+  // contrast (bare paper) it's 40% of the brightest.
+  const bs = Math.max(W, H) >> 6, BW = Math.ceil(W / bs), BH = Math.ceil(H / bs);
+  const peak = new Uint8Array(BW * BH), low = new Uint8Array(BW * BH).fill(255);
+  for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) {
+    const v = V[i], q = (y / bs | 0) * BW + (x / bs | 0);
     if (v > peak[q]) peak[q] = v;
+    if (v < low[q]) low[q] = v;
   }
   const floor = 0.2 * peak.reduce((m, v) => Math.max(m, v), 0);
-  const T = peak.map((_, q) => {
-    let m = 0;
+  const cutoff = f => peak.map((_, q) => {
+    let hi = 0, lo = 255;
     for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
       const x = q % BW + i, y = (q / BW | 0) + j;
-      if (x >= 0 && y >= 0 && x < BW && y < BH) m = Math.max(m, peak[y * BW + x]);
+      if (x >= 0 && y >= 0 && x < BW && y < BH) { hi = Math.max(hi, peak[y * BW + x]); lo = Math.min(lo, low[y * BW + x]); }
     }
-    return Math.max(0.4 * m, floor);
+    return Math.max(hi - lo > 0.3 * hi ? lo + f * (hi - lo) : 0.4 * hi, floor);
   });
+  let T;
   const lit = (x, y) => V[y * W + x] > T[(y / bs | 0) * BW + (x / bs | 0)];
   const run = (x, y, dx, dy, v) => { let n = 0; while (x >= 0 && y >= 0 && x < W && y < H && lit(x, y) === v) { x += dx; y += dy; n++; } return n; };
-  // Checks the pattern through (x, y) along (dx, dy): [offset to the true centre, module size] or null
+  // Checks the pattern through (x, y) along (dx, dy): [offset to the true centre, unit] or null
   const cross = (x, y, dx, dy) => {
     const r = [];
     for (const s of [-1, 1]) {
@@ -327,7 +396,8 @@ function findCorners({ data, width: W, height: H }) {
     return [(r[3] - r[0]) / 2, u];
   };
   const cands = [];
-  for (let y = 0; y < H; y += 2) {
+  T = cutoff(0.4);
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W;) {
       if (!lit(x, y)) { x++; continue; }
       const n = run(x, y, 1, 0, true), mx = x + (n >> 1), h = n >= 4 && cross(mx, y, 1, 0);
@@ -337,91 +407,179 @@ function findCorners({ data, width: W, height: H }) {
       if (!v) continue;
       const cy = Math.round(y + v[0]), h2 = cross(cx, cy, 1, 0);
       if (!h2) continue;
-      const fx = cx + h2[0], fy = y + v[0], u = h[1];
+      const fx = cx + h2[0], fy = y + v[0], u = (h2[1] + v[1]) / 2; // the unit from the row and column through the centre: off-centre rows of a turned bullseye cut its middle short
       const c = cands.find(c => Math.abs(c.x / c.n - fx) < 3 * u && Math.abs(c.y / c.n - fy) < 3 * u);
-      if (c) { c.x += fx; c.y += fy; c.n++; } else cands.push({ x: fx, y: fy, n: 1 });
+      if (c) { c.x += fx; c.y += fy; c.u += u; c.n++; } else cands.push({ x: fx, y: fy, u, n: 1 });
     }
   }
-  // The centre colour says which corner it is, so the card can be any way up.
-  const quad = CORNERS.map(([, , col]) => {
-    let bestC = null;
-    for (const c of cands) {
-      const p = (Math.round(c.y / c.n) * W + Math.round(c.x / c.n)) * 4, px = [data[p], data[p + 1], data[p + 2]], mx = Math.max(...px, 1);
-      const dist = k => PALETTE[k].reduce((s, v, i) => s + (v / Math.max(...PALETTE[k]) - px[i] / mx) ** 2, 0);
-      if ([RED, GREEN, YELLOW, BLUE].every(k => dist(col) <= dist(k)) && (!bestC || c.n > bestC.n)) bestC = c;
-    }
-    return bestC && bestC.n > 1 ? [bestC.x / bestC.n + 0.5, bestC.y / bestC.n + 0.5] : null;
-  });
-  const n = quad.filter(Boolean).length;
-  if (n < 4) throw new Error(`found ${n} of 4 corner marks`);
-  return { V, quad };
+  return cands.map(c => ({ x: c.x / c.n + 0.5, y: c.y / c.n + 0.5, u: c.u / c.n }));
 }
 
-// Photo ({ data: RGBA, width, height }, like ImageData) of a printed card -> { name, rgba }
-export async function scan(img) {
-  const { data, width: W, height: H } = img, { V, quad } = findCorners(img);
-  const [a, b, c, d, e, f, g, h] = squareToQuad(quad); // finder centres sit 7 modules in from each corner
-  const map = (x, y) => { const u = (x - 7) / (C - 14), v = (y - 7) / (R - 14), w = g * u + h * v + 1; return [(a * u + b * v + c) / w, (d * u + e * v + f) / w]; };
-  const val = (x, y) => { x = Math.floor(x); y = Math.floor(y); return x < 0 || y < 0 || x >= W || y >= H ? 255 : V[y * W + x]; };
-
-  // Paper curl and lens distortion bend the grid, so measure how far each alignment target is
-  // from where the flat mapping puts it. Its black ring is the only black for modules around.
-  // ponytail: no outlier rejection; median-filter the offsets if glare throws single targets off
-  const disp = LY.map(cy => LX.map(cx => {
-    const pts = [];
-    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) pts.push(map(cx + 0.5 + i, cy + 0.5 + j));
-    const s = Math.hypot(pts[5][0] - pts[4][0], pts[5][1] - pts[4][1]), step = Math.max(1, s / 4);
-    let best = -Infinity, off = [0, 0];
-    for (let dy = -4 * s; dy <= 4 * s; dy += step) for (let dx = -4 * s; dx <= 4 * s; dx += step) {
-      let sc = 2 * val(pts[4][0] + dx, pts[4][1] + dy);
-      for (const p of pts) sc -= val(p[0] + dx, p[1] + dy);
-      if (sc > best) { best = sc; off = [dx, dy]; }
-    }
-    return off;
-  }));
-  const at = (x, y) => {
-    const p = map(x, y);
-    const fx = Math.min(Math.max((x - 24) / (C - 49) * (LX.length - 1), 0), LX.length - 1.001);
-    const fy = Math.min(Math.max((y - 24) / (R - 49) * (LY.length - 1), 0), LY.length - 1.001);
-    const i = fx | 0, j = fy | 0, s = fx - i, t = fy - j;
-    for (const k of [0, 1]) p[k] += (disp[j][i][k] * (1 - s) + disp[j][i + 1][k] * s) * (1 - t) + (disp[j + 1][i][k] * (1 - s) + disp[j + 1][i + 1][k] * s) * t;
-    return p;
+// The homography that best takes the sheet points to the frame points (least squares, on centred
+// and scaled coordinates so it stays well conditioned): { to: sheet -> frame, from: frame -> sheet }
+function fit(pairs) {
+  const norm = pts => {
+    const m = [0, 1].map(k => pts.reduce((t, p) => t + p[k], 0) / pts.length);
+    return [m, Math.sqrt(pts.reduce((t, p) => t + (p[0] - m[0]) ** 2 + (p[1] - m[1]) ** 2, 0) / pts.length / 2) || 1];
   };
-
-  // Mean colour at each module centre
-  const rad = Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) / (C - 14) >= 4 ? 1 : 0;
-  const s = new Float32Array(C * R * 3);
-  for (let y = 0; y < R; y++) for (let x = 0; x < C; x++) {
-    const [px, py] = at(x + 0.5, y + 0.5), o = (y * C + x) * 3;
-    for (let j = -rad; j <= rad; j++) for (let i = -rad; i <= rad; i++) {
-      const q = (Math.min(Math.max(Math.floor(py) + j, 0), H - 1) * W + Math.min(Math.max(Math.floor(px) + i, 0), W - 1)) * 4;
-      s[o] += data[q]; s[o + 1] += data[q + 1]; s[o + 2] += data[q + 2];
-    }
+  const [ms, ss] = norm(pairs.map(p => p[0])), [mf, sf] = norm(pairs.map(p => p[1]));
+  const A = Array.from({ length: 8 }, () => new Float64Array(9));
+  for (const [[X0, Y0], [x0, y0]] of pairs) {
+    const X = (X0 - ms[0]) / ss, Y = (Y0 - ms[1]) / ss, x = (x0 - mf[0]) / sf, y = (y0 - mf[1]) / sf;
+    for (const [row, rhs] of [[[X, Y, 1, 0, 0, 0, -X * x, -Y * x], x], [[0, 0, 0, X, Y, 1, -X * y, -Y * y], y]])
+      for (let i = 0; i < 8; i++) { for (let j = 0; j < 8; j++) A[i][j] += row[i] * row[j]; A[i][8] += row[i] * rhs; }
   }
-  // Even out lighting: the data is masked to use all 8 colours equally, so the mean colour of
-  // any 16x16 block of it is the same grey times the local light.
-  const BW = Math.ceil(C / 16), light = new Float32Array(BW * Math.ceil(R / 16) * 4);
-  const block = p => (((p / C | 0) >> 4) * BW + (p % C >> 4)) * 4;
-  for (const p of DATA_POS) { const q = block(p); for (let k = 0; k < 3; k++) light[q + k] += s[p * 3 + k]; light[q + 3]++; }
-  for (let p = 0; p < C * R; p++) { const q = block(p); for (let k = 0; k < 3; k++) s[p * 3 + k] /= light[q + k] / (light[q + 3] || 1) || 1; }
-
-  // Reference colours from the printed swatches, then refined on the data itself (k-means)
-  let ref = new Float32Array(32);
-  LAYOUT.forEach((v, p) => { if (v >= SWATCH && v < DATA) { const q = (v - SWATCH) * 4; for (let k = 0; k < 3; k++) ref[q + k] += s[p * 3 + k] / 16; } });
-  const nearest = p => {
-    let best = 0, bd = Infinity;
-    for (let k = 0; k < 8; k++) {
-      const d = (s[p * 3] - ref[k * 4]) ** 2 + (s[p * 3 + 1] - ref[k * 4 + 1]) ** 2 + (s[p * 3 + 2] - ref[k * 4 + 2]) ** 2;
-      if (d < bd) { bd = d; best = k; }
-    }
-    return best;
+  for (let c = 0; c < 8; c++) { // Gauss-Jordan, partial pivoting
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]];
+    if (Math.abs(A[c][c]) < 1e-12) return null;
+    for (let r = 0; r < 8; r++) if (r !== c) { const k = A[r][c] / A[c][c]; for (let j = c; j < 9; j++) A[r][j] -= k * A[c][j]; }
+  }
+  const [a, b, c, d, e, f, g, h] = A.map((r, i) => r[8] / r[i]);
+  const I = [e - f * h, c * h - b, b * f - c * e, f * g - d, a - c * g, c * d - a * f, d * h - e * g, b * g - a * h, a * e - b * d];
+  const apply = (M, m0, s0, m1, s1) => (x0, y0) => {
+    const x = (x0 - m0[0]) / s0, y = (y0 - m0[1]) / s0, w = M[6] * x + M[7] * y + M[8];
+    return [m1[0] + s1 * (M[0] * x + M[1] * y + M[2]) / w, m1[1] + s1 * (M[3] * x + M[4] * y + M[5]) / w];
   };
-  for (let it = 0; it < 3; it++) {
-    const acc = new Float32Array(32);
-    for (const p of DATA_POS) { const q = nearest(p) * 4; for (let k = 0; k < 3; k++) acc[q + k] += s[p * 3 + k]; acc[q + 3]++; }
-    ref = ref.map((v, i) => acc[i | 3] ? acc[i] / acc[i | 3] : v);
+  return { to: apply([a, b, c, d, e, f, g, h, 1], ms, ss, mf, sf), from: apply(I, mf, sf, ms, ss) };
+}
+
+// Reads the sheet a frame at a time, close up, in any order. Each frame finds the alignment targets
+// it can see, works out where it is on the sheet from their IDs, and votes on every module it sees
+// sharply enough. Once the format bits are read it knows how many tiles the cart takes; each tile is
+// decoded as soon as enough of it is read (modules not seen yet are gaps the error correction fills),
+// and then its modules are known for sure. add(frame) -> the cart, once every tile is in; null till then.
+// see() hears each frame's { locks (where in the frame it recognised targets), side (of the paper it's looking at:
+// 0 front, 1 back), view (its outline, on the grid), mod (px a module), tiles (one per tile the cart takes: 1 decoded,
+// below that how near it is), fresh (tiles decoded this frame) }.
+// shaky(module) says whether one was read only faintly, or with frames disagreeing.
+const SURE = 0.25; // how sure a module's votes must be to count as read; below it, it's a gap for the error correction
+export function sweep() {
+  const votes = new Float32Array(C * R), looks = new Uint8Array(C * R), seen = new Uint8Array(C * R), sym = new Uint8Array(C * R);
+  const place = new Map(TARGETS.map(([i, j, x, y]) => [i << 4 | j, [x + 0.5, y + 0.5]]));
+  const tseen = new Uint32Array(NT), done = new Map(); // per tile: modules read; decoded ones
+  const told = new Map(); // format word -> how many targets have said it: every target carries it
+  let fmt = null;
+  const tiles = () => fmt && Array.from({ length: fmt.n }, (_, t) => done.has(t) ? 1 : Math.min(0.95, tseen[t] / (TILE_POS[t].length * (1 - LEVELS[fmt.lv]))));
+  async function add({ data, width: W, height: H }, see = () => {}) {
+    // Spots are found at half size (a quarter of the pixels: anything readable is several pixels a
+    // module), then targets and data are read at full size
+    const { V, half, w, h } = bright({ data, width: W, height: H });
+    const cands = blobs(half, w, h).map(c => ({ x: c.x * 2, y: c.y * 2, u: c.u * 2 }));
+    const val = (x, y) => V[Math.min(H - 1, Math.max(0, Math.round(y))) * W + Math.min(W - 1, Math.max(0, Math.round(x)))];
+    // Each candidate's ID, if it's a target: try it at every angle (4 degrees apart, at its own
+    // scale), keep the angle where the bullseye's ring corners land right and the ID's CRC
+    // checks. Random data passes both about once in tens of millions of tries.
+    let pairs = [];
+    const RING = [[2, 2, 0], [-2, 2, 0], [2, -2, 0], [-2, -2, 0], [3, 3, 1], [-3, 3, 1], [3, -3, 1], [-3, -3, 1], [4, 4, 0], [-4, 4, 0], [4, -4, 0], [-4, -4, 0]];
+    for (const c of cands) for (let a = 0; a < 90; a++) {
+      // c.u was measured along a scan row, which crosses a turned bullseye's rings at a slant, so it
+      // reads a module as 1 / cos(the turn, folded to 0-45 degrees) too wide
+      const turn = a * 4 % 90, m = c.u * Math.cos(Math.min(turn, 90 - turn) * Math.PI / 180);
+      const co = Math.cos(a * Math.PI / 45) * m, si = Math.sin(a * Math.PI / 45) * m;
+      const at = (dx, dy) => val(c.x + dx * co - dy * si, c.y + dx * si + dy * co);
+      const white = (at(0, 0) + at(3, 0) + at(-3, 0) + at(0, 3) + at(0, -3)) / 5, black = (at(2, 0) + at(-2, 0) + at(0, 2) + at(0, -2)) / 4, mid = (white + black) / 2;
+      if (white - black < 20 || RING.some(([i, j, v]) => at(i, j) > mid !== !!v)) continue;
+      let word = 0;
+      for (let t = 0; t < 18; t++) word = word << 1 | (at(t % 9 - 4, 5 + (t / 9 | 0)) > mid);
+      const id = word >> 10;
+      if ((word & 0x3ff) === crc10(id) && at(4, 7) > mid && place.has(id)) {
+        let f = 0;
+        for (let t = 18; t < 26; t++) f = f << 1 | (at(t % 9 - 4, 5 + (t / 9 | 0)) > mid);
+        if (f >> 2 >= 1 && f >> 2 <= NT) told.set(f, (told.get(f) || 0) + 1);
+        pairs.push([place.get(id), [c.x, c.y], id]); break;
+      }
+    }
+    // The format: what most targets have said so far. A change (an early misread outvoted) starts the tiles over.
+    const f = [...told].reduce((a, b) => b[1] > a[1] ? b : a, [0, 0])[0];
+    if (f && (!fmt || f !== (fmt.n << 2 | fmt.lv))) { fmt = { n: f >> 2, lv: f & 3 }; done.clear(); }
+    // One side of the paper at a time: the side most targets are on (others are misreads)
+    const front = pairs.filter(p => !side(p[0][0])).length, on = front * 2 >= pairs.length ? 0 : 1;
+    pairs = pairs.filter(p => side(p[0][0]) === on);
+    // Where the frame is on the sheet: fit, and while some target is far off the fit (a misread),
+    // drop the worst one and fit again. Curl leaves the rest a module or two off a flat fit; the
+    // correction below takes that up.
+    let fitted = null, good = pairs;
+    while (good.length >= 4) {
+      fitted = fit(good);
+      if (!fitted) break;
+      const px = Math.hypot(...[0, 1].map(k => fitted.to(good[0][0][0] + 1, good[0][0][1])[k] - fitted.to(...good[0][0])[k]));
+      const miss = good.map(([s, f]) => { const [x, y] = fitted.to(...s); return Math.hypot(x - f[0], y - f[1]); }), worst = miss.indexOf(Math.max(...miss));
+      if (miss[worst] < 6 * px) break;
+      good = good.filter((_, k) => k !== worst);
+    }
+    const spread = new Set(good.map(([s]) => s[0])).size > 1 && new Set(good.map(([s]) => s[1])).size > 1;
+    if (!fitted || good.length < 4 || !spread) { see({ locks: pairs.map(p => p[1]), side: pairs.length ? on : undefined, tiles: tiles() }); return null; }
+    const { from } = fitted, view = [[0, 0], [W, 0], [W, H], [0, H]].map(([x, y]) => from(x, y));
+    // Paper curls, so the flat fit is off between targets: each target's leftover offset, spread to
+    // the lattice points it didn't see (from their neighbours, in the same quarter), and blended
+    // across each lattice cell
+    const off = LY.map(() => LX.map(() => null));
+    for (const [s, f, id] of good) { const [x, y] = fitted.to(...s); off[id & 15][id >> 4] = [f[0] - x, f[1] - y]; }
+    const same = (L, a, b, P) => Math.floor(L[a] / P) === Math.floor(L[b] / P); // in the same quarter, P modules a quarter
+    for (let pass = 0; pass < 12; pass++) off.forEach((row, j) => row.forEach((v, i) => {
+      if (v) return;
+      const nb = [[j - 1, i], [j + 1, i], [j, i - 1], [j, i + 1]].filter(([b, a]) => off[b]?.[a] && same(LY, b, j, QR) && same(LX, a, i, QP)).map(([b, a]) => off[b][a]);
+      if (nb.length) row[i] = [0, 1].map(k => nb.reduce((t, o) => t + o[k], 0) / nb.length);
+    }));
+    off.forEach(row => row.forEach((v, i) => row[i] = v || [0, 0]));
+    const cell = (L, v, P) => {
+      let i = 0;
+      while (i < L.length - 2 && L[i + 1] <= v) i++;
+      if (Math.floor(L[i] / P) !== Math.floor(L[i + 1] / P)) return [i, Math.floor(v / P) === Math.floor(L[i] / P) ? 0 : 1];
+      return [i, Math.min(Math.max((v - L[i]) / (L[i + 1] - L[i]), 0), 1)];
+    };
+    const to = (x, y) => {
+      const p = fitted.to(x, y), [i, s] = cell(LX, x, QP), [j, t] = cell(LY, y, QR);
+      for (const k of [0, 1]) p[k] += (off[j][i][k] * (1 - s) + off[j][i + 1][k] * s) * (1 - t) + (off[j + 1][i][k] * (1 - s) + off[j + 1][i + 1][k] * s) * t;
+      return p;
+    };
+    const step = Math.hypot(...[0, 1].map(k => fitted.to(C / 2 + 1, R / 2)[k] - fitted.to(C / 2, R / 2)[k])); // px a module, about
+    // Every module in view that's still needed, sharp enough: lighter or darker than its
+    // neighbourhood (16 x 16 modules, half of them white), weighted by how far from it, voting white or black
+    const dirty = new Set();
+    if (step >= 2.5) {
+      const xs = view.map(p => p[0]), ys = view.map(p => p[1]);
+      const x0 = Math.max(on * 2 * QP, Math.floor(Math.min(...xs))), x1 = Math.min((on + 1) * 2 * QP, Math.ceil(Math.max(...xs))); // this side's modules only
+      const y0 = Math.max(0, Math.floor(Math.min(...ys))), y1 = Math.min(R, Math.ceil(Math.max(...ys)));
+      const BWb = Math.ceil(C / 16), light = new Float32Array(BWb * Math.ceil(R / 16) * 2), got = [];
+      const rad = step >= 4 ? 1 : 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const p = y * C + x, t = TILE_OF[p];
+        if (t < 0 || done.has(t)) continue; // data not decoded yet only
+        const [fx, fy] = to(x + 0.5, y + 0.5);
+        if (fx < 3 || fy < 3 || fx > W - 4 || fy > H - 4) continue;
+        let l = 0;
+        for (let j = -rad; j <= rad; j++) for (let i = -rad; i <= rad; i++) { const q = ((Math.floor(fy) + j) * W + Math.floor(fx) + i) * 4; l += data[q] + data[q + 1] + data[q + 2]; }
+        const b = ((y >> 4) * BWb + (x >> 4)) * 2;
+        light[b] += l; light[b + 1]++;
+        got.push(p, l);
+      }
+      for (let k = 0; k < got.length; k += 2) {
+        const p = got[k], x = p % C, y = p / C | 0, b = ((y >> 4) * BWb + (x >> 4)) * 2, m = light[b] / light[b + 1];
+        votes[p] += Math.max(-1, Math.min(1, (got[k + 1] / m - 1) * 2));
+        if (looks[p] < 255) looks[p]++;
+        if (!seen[p] && Math.abs(votes[p]) >= SURE) { seen[p] = 1; tseen[TILE_OF[p]]++; }
+        dirty.add(TILE_OF[p]);
+      }
+    }
+    // Each tile this frame added to that's read enough to be worth a try, its bits as voted. A
+    // decoded tile's modules are then set for sure, to what the error correction made them.
+    const fresh = [];
+    if (fmt) for (const t of dirty) {
+      if (t >= fmt.n || done.has(t) || tseen[t] < TILE_POS[t].length * (1 - LEVELS[fmt.lv]) * 0.98) continue;
+      for (const p of TILE_POS[t]) sym[p] = votes[p] > 0 ? 1 : 0;
+      try {
+        const d = decodeTile(t, fmt, sym, seen);
+        done.set(t, d); fresh.push(t);
+        TILE_POS[t].forEach((p, i) => { if (i < d.stream.length * 8) { votes[p] = ((d.stream[i >> 3] >> 7 - (i & 7) & 1) ^ MASK[p]) ? 255 : -255; seen[p] = 1; } });
+      } catch { }
+    }
+    see({ locks: pairs.map(p => p[1]), side: on, view, mod: step, tiles: tiles(), fresh });
+    if (!fmt || done.size < fmt.n) return null;
+    try { return await assemble([...done.keys()].sort((a, b) => a - b).map(t => done.get(t).data)); } catch { told.clear(); fmt = null; done.clear(); return null; } // the format was misread: hear it again
   }
-  const sym = new Uint8Array(C * R);
-  for (let p = 0; p < C * R; p++) if (LAYOUT[p] >= FMT) sym[p] = nearest(p);
-  return decodeGrid(sym);
+  // shaky(p): read, but faintly or with frames disagreeing: worth another look
+  return { add, votes, seen, shaky: p => seen[p] && Math.abs(votes[p]) < 0.5 * looks[p] };
 }
