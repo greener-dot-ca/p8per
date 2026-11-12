@@ -9,8 +9,8 @@
 //   read black/white at under 1% wrong, and 0.4 mm colour at over a third. 0.4 mm so the biggest
 //   cart PICO-8 can make (45 KB packed) fits one sheet: 0.6 mm read better from 20 cm, but a sheet
 //   held only 24 KB.
-// - alignment targets (TARGETS) on a ~64-module lattice per tile, so a phone can read the sheet a
-//   part at a time: a 9x9 bullseye (black border, white ring, black ring, 3x3 white centre: 1:1:3:1:1
+// - alignment targets (TARGETS) on a ~76-module lattice per tile, its outer ones at the tile's edges
+//   (so curl is measured right out to them), so a phone can read the sheet a part at a time: a 9x9 bullseye (black border, white ring, black ring, 3x3 white centre: 1:1:3:1:1
 //   at one module a unit) over a 9 x 3 strip of its ID (lattice column and row, 4 bits each), a
 //   CRC-10 of the ID, the format's 8 bits (how many tiles the cart takes, 6 bits, and its
 //   error-correction level, 2 bits, LEVELS), and a white bit. So any one target says where it is,
@@ -45,11 +45,12 @@ const LEVELS = [0.1, 0.15, 0.2, 0.3]; // error correction: the share of each blo
 const QUARTERS = [[1, 0], [0, 1], [1, 1], [2, 1], [3, 1], [3, 0], [2, 0]];
 export const TILES = QUARTERS.map(([i, j]) => [i * QP, j * QR, i * QP + QW, j * QR + QH]), NT = TILES.length;
 export const side = x => x >= 2 * QP ? 1 : 0; // 0 the front, 1 the back
-const E = 30; // targets keep this far in from a tile's edges: 4 a tile across and 5 down, so an ID's column fits 4 bits
-const lattice = (a, b) => { const n = b - a - 2 * E - 1, k = Math.ceil(n / 64) + 1; return Array.from({ length: k }, (_, i) => a + E + Math.floor(i * n / (k - 1))); };
-const LX = [0, 1, 2, 3].flatMap(i => lattice(i * QP, i * QP + QW)), LY = [0, 1].flatMap(j => lattice(j * QR, j * QR + QH)); // alignment target centres, each quarter its own
+// k target centres from a + lo to b - 1 - hi: a target reaches 4 modules left, right and up of its
+// centre and 7 down. 4 a tile across and 5 down, so an ID's column fits 4 bits.
+const lattice = (a, b, lo, hi, k) => Array.from({ length: k }, (_, i) => a + lo + Math.floor(i * (b - 1 - hi - a - lo) / (k - 1)));
+const LX = [0, 1, 2, 3].flatMap(i => lattice(i * QP, i * QP + QW, 4, 4, 4)), LY = [0, 1].flatMap(j => lattice(j * QR, j * QR + QH, 4, 7, 5)); // alignment target centres, each quarter its own
 const TARGETS = []; // [column, row, x, y] of each target printed, x y its centre module
-const crc10 = id => { let r = id << 10; for (let b = 17; b >= 10; b--) if (r >> b & 1) r ^= 0x633 << b - 10; return (r ^ 0x155) & 0x3ff; }; // xored, so an all-black strip isn't a valid ID (and with a value no earlier layout used)
+const crc10 = id => { let r = id << 10; for (let b = 17; b >= 10; b--) if (r >> b & 1) r ^= 0x633 << b - 10; return (r ^ 0x2e6) & 0x3ff; }; // xored, so an all-black strip isn't a valid ID (and with a value no earlier layout used)
 
 const LAYOUT = new Uint8Array(C * R).fill(PAPER);
 {
@@ -468,15 +469,15 @@ export function sweep() {
     const { V, half, w, h } = bright({ data, width: W, height: H });
     const cands = blobs(half, w, h).map(c => ({ x: c.x * 2, y: c.y * 2, u: c.u * 2 }));
     const val = (x, y) => V[Math.min(H - 1, Math.max(0, Math.round(y))) * W + Math.min(W - 1, Math.max(0, Math.round(x)))];
-    // Each candidate's ID, if it's a target: try it at every angle (4 degrees apart, at its own
-    // scale), keep the angle where the bullseye's ring corners land right and the ID's CRC
+    // Each candidate's ID, if it's a target: try it at every angle (4 degrees apart) and a few
+    // scales (curl and blur put its measured size off), keep the one where the bullseye's ring corners land right and the ID's CRC
     // checks. Random data passes both about once in tens of millions of tries.
     let pairs = [];
     const RING = [[2, 2, 0], [-2, 2, 0], [2, -2, 0], [-2, -2, 0], [3, 3, 1], [-3, 3, 1], [3, -3, 1], [-3, -3, 1], [4, 4, 0], [-4, 4, 0], [4, -4, 0], [-4, -4, 0]];
-    for (const c of cands) for (let a = 0; a < 90; a++) {
+    for (const c of cands) found: for (const sc of [1, 0.92, 1.08]) for (let a = 0; a < 90; a++) {
       // c.u was measured along a scan row, which crosses a turned bullseye's rings at a slant, so it
       // reads a module as 1 / cos(the turn, folded to 0-45 degrees) too wide
-      const turn = a * 4 % 90, m = c.u * Math.cos(Math.min(turn, 90 - turn) * Math.PI / 180);
+      const turn = a * 4 % 90, m = sc * c.u * Math.cos(Math.min(turn, 90 - turn) * Math.PI / 180);
       const co = Math.cos(a * Math.PI / 45) * m, si = Math.sin(a * Math.PI / 45) * m;
       const at = (dx, dy) => val(c.x + dx * co - dy * si, c.y + dx * si + dy * co);
       const white = (at(0, 0) + at(3, 0) + at(-3, 0) + at(0, 3) + at(0, -3)) / 5, black = (at(2, 0) + at(-2, 0) + at(0, 2) + at(0, -2)) / 4, mid = (white + black) / 2;
@@ -488,7 +489,7 @@ export function sweep() {
         let f = 0;
         for (let t = 18; t < 26; t++) f = f << 1 | (at(t % 9 - 4, 5 + (t / 9 | 0)) > mid);
         if (f >> 2 >= 1 && f >> 2 <= NT) told.set(f, (told.get(f) || 0) + 1);
-        pairs.push([place.get(id), [c.x, c.y], id]); break;
+        pairs.push([place.get(id), [c.x, c.y], id]); break found;
       }
     }
     // The format: what most targets have said so far. A change (an early misread outvoted) starts the tiles over.
@@ -524,11 +525,11 @@ export function sweep() {
       if (nb.length) row[i] = [0, 1].map(k => nb.reduce((t, o) => t + o[k], 0) / nb.length);
     }));
     off.forEach(row => row.forEach((v, i) => row[i] = v || [0, 0]));
-    const cell = (L, v, P) => {
-      let i = 0;
-      while (i < L.length - 2 && L[i + 1] <= v) i++;
-      if (Math.floor(L[i] / P) !== Math.floor(L[i + 1] / P)) return [i, Math.floor(v / P) === Math.floor(L[i] / P) ? 0 : 1];
-      return [i, Math.min(Math.max((v - L[i]) / (L[i + 1] - L[i]), 0), 1)];
+    const cell = (L, v, P) => { // v's lattice cell in its own quarter, the nearest one past the outer targets (extrapolating, as the curl goes on)
+      const q = Math.floor(v / P), last = L.findLastIndex(l => Math.floor(l / P) === q);
+      let i = L.findIndex(l => Math.floor(l / P) === q);
+      while (i < last - 1 && L[i + 1] <= v) i++;
+      return [i, (v - L[i]) / (L[i + 1] - L[i])];
     };
     const to = (x, y) => {
       const p = fitted.to(x, y), [i, s] = cell(LX, x, QP), [j, t] = cell(LY, y, QR);
