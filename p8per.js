@@ -533,20 +533,25 @@ const SURE = 0.25; // how sure a module's votes must be to count as read; below 
 export function sweep() {
   const votes = new Float32Array(C * R), looks = new Uint8Array(C * R), seen = new Uint8Array(C * R), sym = new Uint8Array(C * R);
   const place = new Map(TARGETS.map(([i, j, x, y]) => [i << 4 | j, [x + 0.5, y + 0.5]]));
+  const TAGS = [...place.keys()].map(id => [tag(id), id]), ones = x => { let n = 0; for (; x; x &= x - 1) n++; return n; };
+  const near = (word, d = 2) => TAGS.find(([t]) => ones((word ^ t) >>> 0) <= d)?.[1] ?? -1; // the printed target whose ring this is (d bits off at most), or -1
   const tseen = new Uint32Array(NT), done = new Map(); // per tile: modules read; decoded ones
   const told = new Map(); // format word -> how many targets have said it: every target carries it
   let fmt = null;
   const tiles = () => fmt && Array.from({ length: fmt.n }, (_, t) => done.has(t) ? 1 : Math.min(0.95, tseen[t] / (TILE_POS[t].length * (1 - LEVELS[fmt.lv]))));
   async function add({ data, width: W, height: H }, see = () => {}) {
-    // Spots are found at half size (a quarter of the pixels: anything readable is several pixels a
-    // module), then targets and data are read at full size
+    // Spots are found at full size in video (a module only a few pixels, blurred), and at half size
+    // in a big photo (a quarter of the pixels, and still several a module); targets and data are read at full size
     const { V, half, w, h } = bright({ data, width: W, height: H });
-    const cands = blobs(half, w, h).map(c => ({ x: c.x * 2, y: c.y * 2, u: c.u * 2 }));
+    const cands = W * H <= 2.1e6 ? blobs(V, W, H) : blobs(half, w, h).map(c => ({ x: c.x * 2, y: c.y * 2, u: c.u * 2 }));
     const val = (x, y) => V[Math.min(H - 1, Math.max(0, Math.round(y))) * W + Math.min(W - 1, Math.max(0, Math.round(x)))];
     // Each candidate's ID, if it's a target: try it at every angle (4 degrees apart) and a few
-    // scales (curl and blur put its measured size off), keep the one where the bullseye's ring corners land right and the ID's CRC
-    // checks. Random data passes both about once in tens of millions of tries.
+    // scales (curl and blur put its measured size off), keep the one where the bullseye's ring
+    // corners land right and the ring reads as a printed target's ID and CRC, give or take 2 bits
+    // (blur): valid rings are 10 bits apart and one read from the wrong side 5 from any, so that
+    // can't mistake one for another. Random data passes both about once in millions of tries.
     let pairs = [];
+    const STRETCH = [0.88, 0.94, 1, 1.06, 1.12], NUDGE = [-0.3, 0, 0.3];
     const RING = [[2, 2, 0], [-2, 2, 0], [2, -2, 0], [-2, -2, 0], [3, 3, 1], [-3, 3, 1], [3, -3, 1], [-3, -3, 1], [4, 4, 0], [-4, 4, 0], [4, -4, 0], [-4, -4, 0]];
     for (const c of cands) found: for (const sc of [1, 0.92, 1.08]) for (let a = 0; a < 90; a++) {
       // c.u was measured along a scan row, which crosses a turned bullseye's rings at a slant, so it
@@ -556,12 +561,17 @@ export function sweep() {
       const at = (dx, dy) => val(c.x + dx * co - dy * si, c.y + dx * si + dy * co);
       const white = (at(0, 0) + at(3, 0) + at(-3, 0) + at(0, 3) + at(0, -3)) / 5, black = (at(2, 0) + at(-2, 0) + at(0, 2) + at(0, -2)) / 4, mid = (white + black) / 2;
       if (white - black < 20 || RING.some(([i, j, v]) => at(i, j) > mid !== !!v)) continue;
-      let word = 0;
-      for (let t = 0; t < 32; t++) word = (word << 1 | (at(...RIM[t]) > mid)) >>> 0;
-      const id = word >>> 24;
-      if (word === tag(id) && place.has(id)) {
+      const ring = look => { let w = 0; for (let t = 0; t < 32; t++) w = (w << 1 | (look(...RIM[t]) > mid)) >>> 0; return w; };
+      let id = near(ring(at)), read = at;
+      // Wavy paper stretches a target one way more than the other, and its centre's a guess: the
+      // ring, 5 modules out, may read right a little wider or narrower each way, or nudged
+      stretch: for (const sx of id < 0 ? STRETCH : []) for (const sy of STRETCH) for (const ox of NUDGE) for (const oy of NUDGE) {
+        const look = (dx, dy) => at(ox + dx * sx, oy + dy * sy);
+        if ((id = near(ring(look), 1)) >= 0) { read = look; break stretch; } // 1 bit: these many tries mustn't let random data through
+      }
+      if (id >= 0) {
         let f = 0;
-        for (let t = 32; t < 40; t++) f = f << 1 | (at(...RIM[t]) > mid);
+        for (let t = 32; t < 40; t++) f = f << 1 | (read(...RIM[t]) > mid);
         if (f >> 2 >= 1 && f >> 2 <= NT) told.set(f, (told.get(f) || 0) + 1);
         pairs.push([place.get(id), [c.x, c.y], id]); break found;
       }
@@ -590,15 +600,18 @@ export function sweep() {
     // Paper curls, so the flat fit is off between targets: each target's leftover offset, spread to
     // the lattice points it didn't see (from their neighbours, in the same quarter), and blended
     // across each lattice cell
-    const off = LY.map(() => LX.map(() => null));
-    for (const [s, f, id] of good) { const [x, y] = fitted.to(...s); off[id & 15][id >> 4] = [f[0] - x, f[1] - y]; }
     const same = (L, a, b, P) => Math.floor(L[a] / P) === Math.floor(L[b] / P); // in the same quarter, P modules a quarter
-    for (let pass = 0; pass < 12; pass++) off.forEach((row, j) => row.forEach((v, i) => {
-      if (v) return;
-      const nb = [[j - 1, i], [j + 1, i], [j, i - 1], [j, i + 1]].filter(([b, a]) => off[b]?.[a] && same(LY, b, j, QR) && same(LX, a, i, QP)).map(([b, a]) => off[b][a]);
-      if (nb.length) row[i] = [0, 1].map(k => nb.reduce((t, o) => t + o[k], 0) / nb.length);
-    }));
-    off.forEach(row => row.forEach((v, i) => row[i] = v || [0, 0]));
+    const lattice = () => {
+      const off = LY.map(() => LX.map(() => null));
+      for (const [s, f, id] of good) { const [x, y] = fitted.to(...s); off[id & 15][id >> 4] = [f[0] - x, f[1] - y]; }
+      for (let pass = 0; pass < 12; pass++) off.forEach((row, j) => row.forEach((v, i) => {
+        if (v) return;
+        const nb = [[j - 1, i], [j + 1, i], [j, i - 1], [j, i + 1]].filter(([b, a]) => off[b]?.[a] && same(LY, b, j, QR) && same(LX, a, i, QP)).map(([b, a]) => off[b][a]);
+        if (nb.length) row[i] = [0, 1].map(k => nb.reduce((t, o) => t + o[k], 0) / nb.length);
+      }));
+      return off.map(row => row.map(v => v || [0, 0]));
+    };
+    let off = lattice();
     const cell = (L, v, P) => { // v's lattice cell in its own quarter, the nearest one past the outer targets (extrapolating, as the curl goes on)
       const q = Math.floor(v / P), last = L.findLastIndex(l => Math.floor(l / P) === q);
       let i = L.findIndex(l => Math.floor(l / P) === q);
@@ -610,6 +623,31 @@ export function sweep() {
       for (const k of [0, 1]) p[k] += (off[j][i][k] * (1 - s) + off[j][i + 1][k] * s) * (1 - t) + (off[j + 1][i][k] * (1 - s) + off[j + 1][i + 1][k] * s) * t;
       return p;
     };
+    // Targets the search missed (blurred, stretched, at a curled edge): look again where the fit
+    // puts each, at the size and slant the fit gives it there (or a little stretched), within 3.5
+    // modules, for its own ring (3 bits off at most); each found corrects the fit around it, so look
+    // again once more
+    for (let round = 0; round < 2; round++) {
+      const have = new Set(good.map(g => g[2])), add = [];
+      for (const [i, j, x, y] of TARGETS) {
+        const id = i << 4 | j, c = to(x + 0.5, y + 0.5);
+        if (have.has(id) || side(x) !== on || c[0] < 0 || c[1] < 0 || c[0] >= W || c[1] >= H) continue;
+        const ex = to(x + 1.5, y + 0.5), ey = to(x + 0.5, y + 1.5), J = [ex[0] - c[0], ex[1] - c[1], ey[0] - c[0], ey[1] - c[1]], want = tag(id);
+        let best = 4, bp = null;
+        for (const sx of STRETCH) for (const sy of STRETCH) for (let oy = -3.5; oy <= 3.5; oy += 0.25) for (let ox = -3.5; ox <= 3.5; ox += 0.25) {
+          const at = (dx, dy) => val(c[0] + (dx * sx + ox) * J[0] + (dy * sy + oy) * J[2], c[1] + (dx * sx + ox) * J[1] + (dy * sy + oy) * J[3]);
+          const white = (at(0, 0) + at(3, 0) + at(-3, 0) + at(0, 3) + at(0, -3)) / 5, black = (at(2, 0) + at(-2, 0) + at(0, 2) + at(0, -2)) / 4, mid = (white + black) / 2;
+          if (white - black < 20) continue;
+          let w = 0;
+          for (let t = 0; t < 32; t++) w = (w << 1 | (at(...RIM[t]) > mid)) >>> 0;
+          const d = ones((w ^ want) >>> 0);
+          if (d < best) { best = d; bp = [c[0] + ox * J[0] + oy * J[2], c[1] + ox * J[1] + oy * J[3]]; }
+        }
+        if (bp) add.push([place.get(id), bp, id]);
+      }
+      if (!add.length) break;
+      good = [...good, ...add]; off = lattice();
+    }
     const step = Math.hypot(...[0, 1].map(k => fitted.to(C / 2 + 1, R / 2)[k] - fitted.to(C / 2, R / 2)[k])); // px a module, about
     // Every module in view that's still needed, sharp enough: lighter or darker than its
     // neighbourhood (16 x 16 modules, half of them white), weighted by how far from it, voting white or black
@@ -618,12 +656,89 @@ export function sweep() {
       const xs = view.map(p => p[0]), ys = view.map(p => p[1]);
       const x0 = Math.max(on * 2 * QP, Math.floor(Math.min(...xs))), x1 = Math.min((on + 1) * 2 * QP, Math.ceil(Math.max(...xs))); // this side's modules only
       const y0 = Math.max(0, Math.floor(Math.min(...ys))), y1 = Math.min(R, Math.ceil(Math.max(...ys)));
+      // Paper waves between targets too, faster than they're spaced, so the modules themselves line
+      // the reading up: in patches of PS x PS modules, the shift (within half a module of what the
+      // patches round it say) that makes the modules in and just round it most clearly black or
+      // white. From the targets outward, the clearest patch first: a whole module off looks as clear
+      // as right, so each patch follows its neighbours rather than jump. Blended between patch centres.
+      // ponytail: a few hundred ms a 1080p frame in a phone; coarser patches or fewer shifts if it lags
+      const PS = 6, GW = Math.ceil(C / PS), shift = new Map(), heap = [], latest = new Map(); // latest: each patch's newest try (older ones in the heap are stale)
+      const solve = k => {
+        const gx = k % GW, gy = k / GW | 0, pts = [];
+        let need = false;
+        for (let y = Math.max(y0, gy * PS - 3); y < Math.min(y1, gy * PS + PS + 3); y++) for (let x = Math.max(x0, gx * PS - 3); x < Math.min(x1, gx * PS + PS + 3); x++) {
+          const p = y * C + x;
+          if (LAYOUT[p] === PAPER) continue;
+          need ||= !done.has(TILES.findIndex(([a, b, c, d]) => x >= a && x < c && y >= b && y < d)); // some of it in a tile not read yet
+          const [fx, fy] = to(x + 0.5, y + 0.5);
+          if (fx >= 3 && fy >= 3 && fx <= W - 4 && fy <= H - 4) pts.push(fx, fy);
+        }
+        if (!need || pts.length < 60) return;
+        const cx = Math.min(C - 1.01, (gx + 0.5) * PS), cy = Math.min(R - 1.01, (gy + 0.5) * PS), o = to(cx, cy), ex = to(cx + 1, cy), ey = to(cx, cy + 1);
+        // What the patches beside it say, each carrying on the way the shift's been going across the
+        // two before it, if it's gone the same way both times (towards a lifted edge it grows patch on
+        // patch; on crisp print it wobbles, and following that would wander off)
+        const nb = [1, -1, GW, -GW].map(d => {
+          const [a, b, c] = [1, 2, 3].map(n => shift.get(k - n * d));
+          const trend = i => { if (!b || !c) return 0; const d1 = a[i] - b[i], d2 = b[i] - c[i]; return Math.sign(d1) === Math.sign(d2) ? (d1 + d2) / 2 : 0; };
+          return a && [a[0] + trend(0), a[1] + trend(1)];
+        }).filter(Boolean);
+        const pu = nb.reduce((a, o) => a + o[0], 0) / (nb.length || 1), pv = nb.reduce((a, o) => a + o[1], 0) / (nb.length || 1);
+        const clear = (u, v) => { // the variance of the modules' brightness, shifted (u, v) modules
+          const dx = u * (ex[0] - o[0]) + v * (ey[0] - o[0]), dy = u * (ex[1] - o[1]) + v * (ey[1] - o[1]);
+          let s1 = 0, s2 = 0;
+          for (let i = 0; i < pts.length; i += 2) { const l = val(pts[i] + dx, pts[i + 1] + dy); s1 += l; s2 += l * l; }
+          return (s2 / (pts.length / 2) - (s1 / (pts.length / 2)) ** 2) * (1 - 0.5 * ((u - pu) ** 2 + (v - pv) ** 2)); // ties (sharp print: clear over a range) go to the neighbours' shift
+        };
+        let best = [pu, pv, -1], sum = 0;
+        for (let v = -0.5; v <= 0.5; v += 0.25) for (let u = -0.5; u <= 0.5; u += 0.25) { const c = clear(pu + u, pv + v); sum += c; if (c > best[2]) best = [pu + u, pv + v, c]; }
+        const [bu, bv] = best;
+        // Then finer round the best, taking the middle of the shifts that score near it: crisp print
+        // scores much the same over a range, and the right shift is its middle
+        const round = [];
+        for (let v = -0.25; v <= 0.25; v += 0.125) for (let u = -0.25; u <= 0.25; u += 0.125) round.push([bu + u, bv + v, clear(bu + u, bv + v)]);
+        const hi = Math.max(...round.map(n => n[2])), cut = hi - 0.1 * (hi - Math.min(...round.map(n => n[2])));
+        let w = 0, su = 0, sv = 0;
+        for (const [u, v, c] of round) if (c >= cut) { w += c - cut + 1e-9; su += u * (c - cut + 1e-9); sv += v * (c - cut + 1e-9); }
+        best = [su / w, sv / w, hi];
+        latest.set(k, heap.length + Math.random()); heap.push([k, best[0], best[1], best[2] / (sum / 25), latest.get(k)]); // how much clearer than the rest: how sure
+        for (let i = heap.length - 1; i > 0 && heap[i - 1 >> 1][3] < heap[i][3]; i = i - 1 >> 1) [heap[i], heap[i - 1 >> 1]] = [heap[i - 1 >> 1], heap[i]];
+      };
+      const pop = () => {
+        const top = heap[0], last = heap.pop();
+        if (heap.length) {
+          heap[0] = last;
+          for (let i = 0; ;) {
+            let m = i;
+            for (const c of [2 * i + 1, 2 * i + 2]) if (c < heap.length && heap[c][3] > heap[m][3]) m = c;
+            if (m === i) break;
+            [heap[i], heap[m]] = [heap[m], heap[i]]; i = m;
+          }
+        }
+        return top;
+      };
+      for (const [s] of good) solve(Math.floor(s[1] / PS) * GW + Math.floor(s[0] / PS));
+      while (heap.length) {
+        const [k, u, v, , n] = pop();
+        if (shift.has(k) || latest.get(k) !== n) continue;
+        shift.set(k, [u, v]);
+        for (const q of [k - 1, k + 1, k - GW, k + GW]) if (!shift.has(q) && Math.abs(q % GW - k % GW) <= 1 && q >= 0 && q < GW * Math.ceil(R / PS)) solve(q);
+      }
+      const onPage = (x, y) => { // to(), shifted as the patches round (x, y) say
+        const gx = x / PS - 0.5, gy = y / PS - 0.5, ix = Math.floor(gx), iy = Math.floor(gy), ax = gx - ix, ay = gy - iy;
+        let u = 0, v = 0, w = 0;
+        for (const [dx, dy, ww] of [[0, 0, (1 - ax) * (1 - ay)], [1, 0, ax * (1 - ay)], [0, 1, (1 - ax) * ay], [1, 1, ax * ay]]) {
+          const o = shift.get((iy + dy) * GW + ix + dx);
+          if (o && ww > 0) { u += o[0] * ww; v += o[1] * ww; w += ww; }
+        }
+        return w ? to(Math.min(C - 0.01, Math.max(0, x + u / w)), Math.min(R - 0.01, Math.max(0, y + v / w))) : to(x, y);
+      };
       const BWb = Math.ceil(C / 16), light = new Float32Array(BWb * Math.ceil(R / 16) * 2), got = [];
       const rad = step >= 4 ? 1 : 0;
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
         const p = y * C + x, t = TILE_OF[p];
         if (t < 0 || done.has(t)) continue; // data not decoded yet only
-        const [fx, fy] = to(x + 0.5, y + 0.5);
+        const [fx, fy] = onPage(x + 0.5, y + 0.5);
         if (fx < 3 || fy < 3 || fx > W - 4 || fy > H - 4) continue;
         let l = 0;
         for (let j = -rad; j <= rad; j++) for (let i = -rad; i <= rad; i++) { const q = ((Math.floor(fy) + j) * W + Math.floor(fx) + i) * 4; l += data[q] + data[q + 1] + data[q + 2]; }
