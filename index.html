@@ -253,7 +253,10 @@
   // PICO-8's 3x5 font, 15 bits per glyph, so the sheet is lettered like the cart
   const FONT = Object.fromEntries('A7bed B7baf C3923 D6b6f E79a7 F79a4 G392f H5bed I7497 J7496 K5bad L4927 M7f6d N6b6d O3b6e P7be4 Q2b73 R7bad S39ce T7492 U5b6b V5b7a W5b7f X5aad Y5bcf Z72a7 07b6f 16497 273e7 372cf 45bc9 579cf 649ef 77249 87bef 97bc9 .0002 /1494 -01c0'
     .split(' ').map(g => [g[0], parseInt(g.slice(1), 16)]));
-  const CREDIT = [['GENERATED WITH P8PER', 95], ['GITHUB.COM/GREENER-DOT-CA/P8PER', 160]];
+
+  // https://greener-dot-ca.github.io/p8per/ as a QR code (version 3, level M, from CoreImage's
+  // generator): 29 rows of 29 modules, the first module the top bit
+  const SITE = '1fd71e7f 10550441 174fd25d 1759f85d 174f3a5d 104d1f41 1fd5557f 00134f00 16eb2e4b 06808ff1 177a88c6 1199d721 194e3a0c 031dff47 1b6d46e7 05049532 0d4d24ba 009fb9ae 14e93584 02b13a64 0feebdfc 0011d11f 1fdb9f5a 105a151a 174c49f4 17517919 17521825 1048156a 1fdda382'.split(' ').map(r => parseInt(r, 16));
 
   // One side of a sheet to fold in quarters, printed side out: on the front (on = 0) the code on three
   // quarters, and the cart upright on the top-left quarter, which becomes the cover; on the back
@@ -269,18 +272,20 @@
     upscale(code, w, R, M, cv, OX, OY);
     if (on) return cv;
     upscale(solid(rgba), 160, 205, COVER.k, cv, COVER.x, COVER.y);
-    // The credit runs down the cover's folded edge, like a book's spine: in the strip between the
-    // cart and the fold, top to bottom, letters turned a quarter clockwise
-    const tx = Math.round(PW / 2 - 35 - 7), length = CREDIT.reduce((n, [text]) => n + text.length * 12 + 24, -24);
-    let ty = Math.round(PH / 4 - length / 2);
-    for (const [text, grey] of CREDIT) {
+    // Lettering turned a quarter clockwise, reading down from (x, y)
+    const spell = (text, grey, x, y) => {
       ctx.fillStyle = `rgb(${grey},${grey},${grey})`;
-      for (const ch of text) {
-        for (let b = 0; b < 15; b++) if (FONT[ch] >> 14 - b & 1) ctx.fillRect(tx + (4 - (b / 3 | 0)) * 3, ty + b % 3 * 3, 3, 3);
-        ty += 12;
-      }
-      ty += 24;
-    }
+      [...text].forEach((ch, i) => { for (let b = 0; b < 15; b++) if (FONT[ch] >> 14 - b & 1) ctx.fillRect(x + (4 - (b / 3 | 0)) * 3, y + i * 12 + b % 3 * 3, 3, 3); });
+    };
+    // Hidden inside the second fold, down the crease between the bottom quarters: the site's QR code
+    // (0.3 mm modules, to fit between the tiles; the crease runs down its middle column), then the
+    // credit and the link side by side, the crease between them
+    const CREDIT = 'GENERATED WITH P8PER', LINK = 'GITHUB.COM/GREENER-DOT-CA/P8PER', mid = Math.round(PW / 2);
+    const ty = Math.round(PH * 3 / 4 - (29 * 3 + 36 + LINK.length * 12 - 3) / 2);
+    ctx.fillStyle = '#000';
+    SITE.forEach((row, y) => { for (let x = 0; x < 29; x++) if (row >> 28 - x & 1) ctx.fillRect(mid - 44 + x * 3, ty + y * 3, 3, 3); });
+    spell(CREDIT, 95, mid + 5, ty + 29 * 3 + 36);
+    spell(LINK, 160, mid - 20, ty + 29 * 3 + 36);
     return cv;
   }
 
