@@ -27,8 +27,8 @@
 // quarter but the cover (the front's top left) can hold one tile of code, QW x QH modules of
 // 0.4 mm (M px) with at least 6 mm of white all round: to the paper's edge (past any printer's
 // margin) and either side of the folds, so each quarter reads on its own and the folded cart's
-// edges stay clean. A cart takes as many tiles as it needs, in order: the front's three (top right,
-// bottom left, bottom right), then the back's four (bottom left, bottom right, top right, top left).
+// edges stay clean. A cart takes as many tiles as it needs, in order: the front's three (bottom left,
+// bottom right, top right), then the back's four (top left, bottom left, bottom right, top right).
 // Modules are numbered on one grid of C x R: the front's two columns of quarters, then the back's,
 // QP x QR modules apart (half a page), so a module's place on the grid is its place on its page.
 export const PW = 2159, PH = 2794, M = 4;
@@ -41,9 +41,9 @@ const PAPER = 12, FMT = 16, DATA = 255; // LAYOUT codes besides the fixed colour
 const N = 160 * 205;
 const LEVELS = [0.1, 0.15, 0.2, 0.3]; // error correction: the share of each block that's parity
 
-// The tiles, [x0, y0, x1, y1) on the grid, in order. As laid out, front then back:  C 1 | 7 6
-//                                                                                   2 3 | 4 5
-const QUARTERS = [[1, 0], [0, 1], [1, 1], [2, 1], [3, 1], [3, 0], [2, 0]];
+// The tiles, [x0, y0, x1, y1) on the grid, in order. As laid out, front then back:  C 3 | 4 7
+//                                                                                   1 2 | 5 6
+const QUARTERS = [[0, 1], [1, 1], [1, 0], [2, 0], [2, 1], [3, 1], [3, 0]];
 export const TILES = QUARTERS.map(([i, j]) => [i * QP, j * QR, i * QP + QW, j * QR + QH]), NT = TILES.length;
 export const side = x => x >= 2 * QP ? 1 : 0; // 0 the front, 1 the back
 // k target centres from 5 modules in from a to 5 in from b (a target's half): the outer ones flush
@@ -237,6 +237,76 @@ function rsDecode(c, nsym, erase = []) {
     c[all[i]] ^= div(mul(x, pEval(ev, xi)), d);
   });
   for (let i = 0; i < nsym; i++) if (pEval(c, pow2(i))) throw new Error('too much damage to correct');
+}
+
+// ---- QR code: the site's address, printed on the cover ----
+
+// text -> { n, m }: n modules a side, m[y * n + x] 1 dark. Versions 1 to 3 (up to 29 modules), error correction M or else L, byte mode, the
+// mask the standard's penalties score lowest. Up to 53 bytes; throws past that.
+export function qr(text) {
+  const bytes = new TextEncoder().encode(text), TOTAL = [26, 44, 70], EC = { M: [10, 16, 26], L: [7, 10, 15] }; // parity bytes, per version (one block each)
+  const [v, lv] = [['M', 1], ['M', 2], ['M', 3], ['L', 3]].map(([l, v]) => [v, l]).find(([v, l]) => bytes.length + 2 <= TOTAL[v - 1] - EC[l][v - 1]) || [];
+  if (!v) throw new Error(`${text} is too long for the QR code`);
+  const ec = EC[lv][v - 1], k = TOTAL[v - 1] - ec, bits = [], put = (val, n) => { for (let i = n - 1; i >= 0; i--) bits.push(val >> i & 1); };
+  put(4, 4); put(bytes.length, 8); bytes.forEach(b => put(b, 8)); put(0, Math.min(4, 8 * k - bits.length));
+  while (bits.length % 8) bits.push(0);
+  const data = Uint8Array.from({ length: k }, (_, i) => i < bits.length / 8 ? bits.slice(i * 8, i * 8 + 8).reduce((a, b) => a << 1 | b) : (i - bits.length / 8) % 2 ? 0x11 : 0xec);
+  const cw = rsEncode(data, rsGen(ec));
+  // The fixed patterns: finders and their separators, timing, the alignment pattern, the dark module
+  const n = 17 + 4 * v, base = new Uint8Array(n * n), fixed = new Uint8Array(n * n), set = (x, y, d) => { base[y * n + x] = d; fixed[y * n + x] = 1; };
+  for (const [fx, fy] of [[3, 3], [n - 4, 3], [3, n - 4]]) for (let y = fy - 4; y <= fy + 4; y++) for (let x = fx - 4; x <= fx + 4; x++) {
+    const r = Math.max(Math.abs(x - fx), Math.abs(y - fy));
+    if (x >= 0 && y >= 0 && x < n && y < n) set(x, y, r === 2 || r === 4 ? 0 : 1);
+  }
+  for (let i = 8; i < n - 8; i++) { set(i, 6, 1 - i % 2); set(6, i, 1 - i % 2); }
+  if (v > 1) for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) set(4 * v + 10 + x, 4 * v + 10 + y, Math.max(Math.abs(x), Math.abs(y)) === 1 ? 0 : 1);
+  const fmt = f => { // the 15 format bits, both copies
+    const b = i => f >> i & 1;
+    for (let i = 0; i < 6; i++) set(8, i, b(i));
+    set(8, 7, b(6)); set(8, 8, b(7)); set(7, 8, b(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, b(i));
+    for (let i = 0; i < 8; i++) set(n - 1 - i, 8, b(i));
+    for (let i = 8; i < 15; i++) set(8, n - 15 + i, b(i));
+    set(8, n - 8, 1);
+  };
+  fmt(0);
+  // The codewords, two columns at a time from the bottom right, up then down, round the fixed patterns
+  for (let right = n - 1, i = 0; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let t = 0; t < n; t++) for (const x of [right, right - 1]) {
+      const y = (right + 1) & 2 ? t : n - 1 - t;
+      if (!fixed[y * n + x]) { base[y * n + x] = i < cw.length * 8 ? cw[i >> 3] >> 7 - (i & 7) & 1 : 0; i++; }
+    }
+  }
+  const MASKS = [(x, y) => (x + y) % 2, (x, y) => y % 2, (x, y) => x % 3, (x, y) => (x + y) % 3, (x, y) => ((x / 3 | 0) + (y / 2 | 0)) % 2,
+    (x, y) => x * y % 2 + x * y % 3, (x, y) => (x * y % 2 + x * y % 3) % 2, (x, y) => ((x + y) % 2 + x * y % 3) % 2];
+  let best;
+  MASKS.forEach((mask, k) => {
+    const m = base.map((d, p) => fixed[p] ? d : d ^ !mask(p % n, p / n | 0));
+    let f = (lv === 'L' ? 1 : 0) << 3 | k, r = f;
+    for (let i = 0; i < 10; i++) r = r << 1 ^ (r >> 9) * 0x537;
+    f = (f << 10 | r) ^ 0x5412;
+    const b = i => f >> i & 1, at = (x, y, d) => { m[y * n + x] = d; };
+    for (let i = 0; i < 6; i++) at(8, i, b(i));
+    at(8, 7, b(6)); at(8, 8, b(7)); at(7, 8, b(8));
+    for (let i = 9; i < 15; i++) at(14 - i, 8, b(i));
+    for (let i = 0; i < 8; i++) at(n - 1 - i, 8, b(i));
+    for (let i = 8; i < 15; i++) at(8, n - 15 + i, b(i));
+    // Penalties: runs of 5 or more, 2x2 blocks, finder-like runs, and darkness far from half
+    let score = 0, dark = 0;
+    for (const line of Array.from({ length: n }, (_, a) => [Array.from({ length: n }, (_, c) => m[a * n + c]), Array.from({ length: n }, (_, c) => m[c * n + a])]).flat()) {
+      for (let c = 0, run = 1; c < n; c++) { run = c && line[c] === line[c - 1] ? run + 1 : 1; if (run === 5) score += 3; else if (run > 5) score++; }
+      const s = line.join('');
+      for (const pat of ['10111010000', '00001011101']) for (let c = s.indexOf(pat); c >= 0; c = s.indexOf(pat, c + 1)) score += 40;
+    }
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      dark += m[y * n + x];
+      if (x && y && m[y * n + x] === m[y * n + x - 1] && m[y * n + x] === m[(y - 1) * n + x] && m[y * n + x] === m[(y - 1) * n + x - 1]) score += 3;
+    }
+    score += Math.floor(Math.abs(dark * 20 / (n * n) - 10)) * 10;
+    if (!best || score < best.score) best = { n, m, score };
+  });
+  return { n: best.n, m: best.m };
 }
 
 // ---- cart <-> grid ----

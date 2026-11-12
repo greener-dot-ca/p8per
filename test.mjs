@@ -3,7 +3,7 @@
 // grid with damage and gaps, a simulated sweep of phone frames, and a photo of each side whole.
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { C, R, M, QP, QR, OX, OY, PW, PH, TILES, PALETTE, DATA_POS, side, encode, decodeGrid, sweep, pngDecode, pngEncode } from './p8per.js';
+import { C, R, M, QP, QR, OX, OY, PW, PH, TILES, PALETTE, DATA_POS, side, encode, decodeGrid, sweep, qr, pngDecode, pngEncode } from './p8per.js';
 
 let seed = 8;
 const rnd = () => (seed = Math.imul(seed, 1103515245) + 12345 & 0x7fffffff) / 0x80000000;
@@ -104,4 +104,12 @@ for (const [label, cart] of [['cart', rgba], ['the biggest cart PICO-8 can make'
   for (let on = 0; on < code.sides && !one; on++) one = await sw2.add(photo(grid, 4284, 5712, aim(4284, 5712, on * 2 * QP + QP - 11, QR - 11, 7.4, Math.PI + 0.05, 0.1), 2, on), i => Object.assign(info, i));
   if (one) { assert.deepEqual(one.rgba, cart); console.log(`  24 MP photo of each side: ok (${Date.now() - t} ms incl. rendering)`); }
   else { console.log(`  24 MP photo of each side: FAILED, tiles ${(info.tiles || []).map(v => Math.round(v * 9)).join('')}`); process.exitCode = 1; }
+}
+
+// The site's QR code: as CoreImage's generator makes it, bit for bit
+{
+  const { n, m } = qr('https://greener-dot-ca.github.io/p8per/');
+  const ref = '1fd71e7f 10550441 174fd25d 1759f85d 174f3a5d 104d1f41 1fd5557f 00134f00 16eb2e4b 06808ff1 177a88c6 1199d721 194e3a0c 031dff47 1b6d46e7 05049532 0d4d24ba 009fb9ae 14e93584 02b13a64 0feebdfc 0011d11f 1fdb9f5a 105a151a 174c49f4 17517919 17521825 1048156a 1fdda382';
+  assert.deepEqual(Array.from({ length: n }, (_, y) => Array.from({ length: n }, (_, x) => m[y * n + x]).reduce((a, b) => a * 2 + b).toString(16).padStart(8, '0')).join(' '), ref);
+  console.log('QR code ok');
 }

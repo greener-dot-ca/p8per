@@ -9,8 +9,8 @@ label: `carts/p8per-max.p8.png`) fits, with 30% error correction.
 
 The console shows the sheet as printed, front and back side by side, tiles numbered:
 
-    C 1 | 7 6
-    2 3 | 4 5
+    C 3 | 4 7
+    1 2 | 5 6
 
 Scanning, the screen under it shows the camera's view with a guide the shape of a tile; the first
 target it reads says how many tiles the cart takes, and each turns green on the sheet as it decodes.
@@ -29,7 +29,8 @@ Serve the folder with any static server, for example:
 
     python3 -m http.server
 
-The live camera needs HTTPS (or localhost).
+The live camera needs HTTPS (or localhost). Hosting your own copy, set `SITE` at the top of
+`index.html`'s script to its address: every printed sheet carries a QR code of it on the cover.
 
 ## Print
 
